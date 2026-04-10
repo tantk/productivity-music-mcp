@@ -4,6 +4,10 @@ AI-powered focus music plugin for coding CLIs. Say "play music" and it plays neu
 
 Built for the **GMI Cloud x GLM Hackathon**.
 
+## Screenshot
+
+![FocusLine Status Bar](screenshot/statusline.jpg)
+
 ## How It Works
 
 ```
@@ -15,11 +19,6 @@ You: "play some music"
   4. Status bar shows track + Pomodoro countdown
   5. Auto-switches between focus music and break music
   6. GLM generates rotating motivational quotes
-
-Status bar:
-  ▶ Kyoto -- Brain.fm [brainfm]
-  🎯 FOCUS  ████░░░░░░░░░░░  18:46  ●●○○
-    "Build what matters."
 ```
 
 ## The Science
