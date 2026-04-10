@@ -6,7 +6,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from .sources import local_cache, procedural, lyria, minimax_music, freesound, youtube, brainfm
+from .sources import local_cache, lyria, minimax_music, freesound, youtube, brainfm
 
 # Model chain: try each until one returns valid JSON
 MODEL_CHAIN = [
@@ -61,7 +61,7 @@ def _get_context() -> dict:
     else:
         time_of_day = "night"
 
-    available_sources = ["brainfm", "local_cache", "procedural"]
+    available_sources = ["brainfm", "local_cache"]
     if os.environ.get("GOOGLE_API"):
         available_sources.append("lyria3")
     if os.environ.get("GMI_INFER"):
@@ -80,7 +80,6 @@ def _get_context() -> dict:
         "available_sources": available_sources,
         "local_tracks": [t["name"] for t in local_tracks],
         "recent_history": _history[-5:],
-        "procedural_types": ["binaural_beats", "pink_noise", "rain", "drone"],
     }
 
 
@@ -125,24 +124,17 @@ The brain synchronizes its oscillations with rhythmic audio stimuli (neural phas
 
 - "brainfm": **DEFAULT & PREFERRED for focus.** Curated 30-min tracks from Brain.fm's official YouTube channel. Neuroscience-backed, high neural effect, proven to boost focus. Takes ~15s to download. Auto-rotates through tracks, no repeats.
 - "youtube": Search YouTube for any music. Good for variety, specific styles, or break music. Long tracks, ~15s download.
-- "procedural": Python-generated sounds. Instant, no API cost. Types:
-  - binaural_beats: Stereo entrainment. Use beat_freq=16 for focus, 10 for relax, 6 for meditate, 20 for energy
-  - pink_noise: Broadband masking, great for noisy environments
-  - rain: Natural masking with slow modulation
-  - drone: Warm harmonic drone with subtle amplitude modulation
 - "lyria3": Google Lyria 3 AI music. High quality but only 30s clips. Use for variety/swaps, not primary.
 - "freesound": Nature/ambient from freesound.org. Good for rain, birds, ocean during breaks.
 - "local_cache": Cached tracks from previous sessions. Use when exact match exists.
-- "minimax_music": MiniMax Music 2.5 via GMI. Currently unreliable.
 
 ## DECISION PRIORITIES
 
 1. **Default for focus: brainfm** — proven neuroscience-backed 30-min tracks
 2. For variety/different styles → youtube (search for specific genres)
-3. For instant background noise → procedural (no wait)
-4. For AI-generated variety/swaps → lyria3 (30s clips, good between brainfm tracks)
-5. For nature/ambient breaks → procedural rain or freesound
-6. For specific cached tracks → local_cache
+3. For AI-generated variety/swaps → lyria3 (30s clips, good between brainfm tracks)
+4. For nature/ambient breaks → freesound
+5. For specific cached tracks → local_cache
 
 ## YOUTUBE SEARCH STRATEGY
 
@@ -178,7 +170,7 @@ When generating a Lyria prompt:
 You MUST respond with a valid JSON object only — no markdown, no explanation.
 
 {
-  "source": "brainfm|youtube|procedural|lyria3|freesound|local_cache",
+  "source": "brainfm|youtube|lyria3|freesound|local_cache",
   "action": "download|search|generate|play_existing",
   "session_type": "focus|break|long_break|relax|sleep|energize|custom",
   "params": {},
@@ -188,7 +180,6 @@ You MUST respond with a valid JSON object only — no markdown, no explanation.
 Source-specific params:
 - brainfm: {"mood": "focus|sleep"} (auto-picks track, no other params needed)
 - youtube: {"query": "YouTube search query with style + duration + instrumental"}
-- procedural: {"type": "binaural_beats|pink_noise|rain|drone", "duration": 60, "beat_freq": 16.0}
 - lyria3: {"prompt": "detailed neuroscience-optimized prompt", "mood": "focus|calm|energize|break"}
 - freesound: {"query": "search terms"}
 - local_cache: {"track_name": "partial name match"}
@@ -203,8 +194,6 @@ def pick(user_request: str) -> dict:
 - Available sources: {", ".join(context["available_sources"])}
 - Local tracks: {", ".join(context["local_tracks"]) or "none"}
 - Recent history: {json.dumps(context["recent_history"]) if context["recent_history"] else "none"}
-- Procedural types: {", ".join(context["procedural_types"])}
-
 User request: {user_request}"""
 
     try:
@@ -233,7 +222,7 @@ User request: {user_request}"""
 
 
 def execute(decision: dict) -> dict:
-    source = decision.get("source", "procedural")
+    source = decision.get("source", "brainfm")
     params = decision.get("params", {})
 
     try:
@@ -253,24 +242,6 @@ def execute(decision: dict) -> dict:
                     if tracks
                     else {"error": f"No local track matching '{track_name}'"}
                 )
-
-        elif source == "procedural":
-            proc_type = params.get("type", "pink_noise")
-            duration = params.get("duration", 60)
-            if proc_type == "binaural_beats":
-                beat_freq = params.get("beat_freq", 14.0)
-                result = procedural.generate_binaural_beats(
-                    duration=duration, beat_freq=beat_freq
-                )
-            elif proc_type == "rain":
-                result = procedural.generate_rain(duration=duration)
-            elif proc_type == "drone":
-                base_freq = params.get("base_freq", 55.0)
-                result = procedural.generate_drone(
-                    duration=duration, base_freq=base_freq
-                )
-            else:
-                result = procedural.generate_pink_noise(duration=duration)
 
         elif source == "lyria3":
             mood = params.get("mood", "focus")

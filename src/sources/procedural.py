@@ -108,7 +108,7 @@ def generate_binaural_beats(
     duration: float = 60.0,
     base_freq: float = 110.0,
     beat_freq: float = 10.0,
-    amplitude: float = 0.28,
+    amplitude: float = 0.55,
 ) -> dict:
     """Binaural entrainment embedded in a warm stereo pad.
 
@@ -184,7 +184,7 @@ def generate_binaural_beats(
     }
 
 
-def generate_pink_noise(duration: float = 60.0, amplitude: float = 0.22) -> dict:
+def generate_pink_noise(duration: float = 60.0, amplitude: float = 0.50) -> dict:
     """Filtered pink noise with gentle breathing modulation.
 
     Improvements over raw Voss-McCartney:
@@ -245,7 +245,7 @@ def generate_pink_noise(duration: float = 60.0, amplitude: float = 0.22) -> dict
     }
 
 
-def generate_rain(duration: float = 60.0, amplitude: float = 0.25) -> dict:
+def generate_rain(duration: float = 60.0, amplitude: float = 0.55) -> dict:
     """Rain simulation with layered filtered noise.
 
     Three layers, each lowpassed at different cutoffs, to mimic:
@@ -310,7 +310,7 @@ def generate_rain(duration: float = 60.0, amplitude: float = 0.25) -> dict:
 def generate_drone(
     duration: float = 60.0,
     base_freq: float = 55.0,
-    amplitude: float = 0.30,
+    amplitude: float = 0.60,
 ) -> dict:
     """Warm ambient drone — stereo, detuned, with harmonic breathing.
 

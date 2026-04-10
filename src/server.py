@@ -24,7 +24,7 @@ for env_path in [Path.cwd() / ".env", Path.home() / ".env"]:
 
 from mcp.server.fastmcp import FastMCP
 from . import player, dj_agent, state
-from .sources import local_cache, procedural, lyria, minimax_music, freesound, youtube
+from .sources import local_cache, lyria, minimax_music, freesound, youtube
 
 mcp = FastMCP("productivity-music")
 
@@ -168,7 +168,7 @@ def _make_track_info(result: dict) -> dict:
 
     if not title:
         source = result.get("source", "")
-        if source in ("local_cache", "procedural", "lyria3"):
+        if source in ("local_cache", "lyria3"):
             try:
                 from .sources.lyria import _name_track
                 desc = result.get("model_response", "") or fp.stem
@@ -280,20 +280,6 @@ def music(request: str) -> str:
                 "track_duration": _get_duration(pick["path"]),
             }
         _write_state()
-    else:
-        from .sources import procedural as _proc
-        drone = _proc.generate_drone(duration=300, base_freq=55.0)
-        if "path" in drone:
-            player.play_loop(drone["path"])
-            with _track_lock:
-                _current_track = {
-                    "track_name": "Ambient Drone",
-                    "track_file": drone["name"],
-                    "track_source": "procedural",
-                    "track_start": time.time(),
-                    "track_duration": 300,
-                }
-            _write_state()
 
     # ─── BACKGROUND: find real music + pick timer in parallel ───
     timer_result = {}
@@ -484,31 +470,6 @@ def now_playing() -> str:
     return "No audio is playing."
 
 
-@mcp.tool()
-def generate_procedural(sound_type: str = "pink_noise", duration: float = 60.0) -> str:
-    """Generate and play a procedural ambient sound (instant, no API needed).
-
-    Args:
-        sound_type: One of: binaural_beats, pink_noise, rain, drone
-        duration: Duration in seconds (default 60).
-    """
-    result = procedural.generate_for_mood(sound_type, duration)
-    if "error" in result:
-        return f"Error: {result['error']}"
-
-    play_result = player.play(result["path"], background=True)
-    with _track_lock:
-        global _current_track
-        _current_track = {
-            "track_name": result.get("type", sound_type),
-            "track_file": result["name"],
-            "track_source": "procedural",
-            "track_start": time.time(),
-            "track_duration": duration,
-        }
-    _write_state()
-    return f"{play_result} ({result['type']}, {int(duration)}s)"
-
 
 @mcp.tool()
 def generate_lyria(mood: str = "focus") -> str:
@@ -605,7 +566,6 @@ def list_sources() -> str:
     """List all available music sources and their status."""
     sources = {
         "brainfm": "Available (curated 30-min focus tracks)",
-        "procedural": "Available (instant: binaural_beats, pink_noise, rain, drone)",
         "lyria3": "Available" if os.environ.get("GOOGLE_API") else "Unavailable (no GOOGLE_API)",
         "youtube": "Available" if youtube.is_available() else "Unavailable (no yt-dlp)",
         "freesound": "Available" if freesound.is_available() else "Unavailable (no FREESOUND_API_KEY)",
