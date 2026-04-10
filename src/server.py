@@ -50,13 +50,8 @@ def _start_state_poller():
 
         while True:
             if _current_track or not _pomodoro_stop.is_set():
-                # Read existing state, overlay track info on top
-                # This preserves pomo fields written by the pomodoro thread
-                existing = state.read()
                 with _track_lock:
-                    track_copy = dict(_current_track)
-                if track_copy:
-                    existing.update(track_copy)
+                    existing = dict(_current_track) if _current_track else {}
                 existing["playing"] = True
 
                 # Generate quote in background thread so poller doesn't block
@@ -227,33 +222,36 @@ def music(request: str) -> str:
     source = result.get("source", "unknown")
     reason = result.get("dj_decision", {}).get("reason", "")
 
-    with _track_lock:
-        _current_track = _make_track_info(result)
-        display_name = _current_track["track_name"]
-
-    # Start Pomodoro timer
     _pomodoro_stop.clear()
     phase_end = time.time() + focus_minutes * 60
 
-    # Write initial state with pomodoro
-    state.write({
-        **_current_track,
-        "playing": True,
-        "pomo_phase": "focus",
-        "pomo_cycle": 1,
-        "pomo_total": cycles,
-        "pomo_phase_end": phase_end,
-        "pomo_focus_min": focus_minutes,
-        "pomo_break_min": break_minutes,
-    })
+    with _track_lock:
+        _current_track = _make_track_info(result)
+        # Store pomo fields in _current_track so poller always has them
+        _current_track["pomo_phase"] = "focus"
+        _current_track["pomo_cycle"] = 1
+        _current_track["pomo_total"] = cycles
+        _current_track["pomo_phase_end"] = phase_end
+        _current_track["pomo_focus_min"] = focus_minutes
+        _current_track["pomo_break_min"] = break_minutes
+        display_name = _current_track["track_name"]
+
+    # Write initial state
+    state.write({**_current_track, "playing": True})
 
     def _set_track(result):
-        """Thread-safe track update."""
+        """Thread-safe track update. Preserves pomo fields."""
         global _current_track
         if "path" not in result:
             return
         with _track_lock:
-            _current_track = _make_track_info(result)
+            new_info = _make_track_info(result)
+            # Preserve pomo fields from existing track
+            for k in ("pomo_phase", "pomo_cycle", "pomo_total", "pomo_phase_end",
+                       "pomo_focus_min", "pomo_break_min"):
+                if k in _current_track:
+                    new_info[k] = _current_track[k]
+            _current_track = new_info
 
     prefetch_q = queue.Queue(maxsize=1)
 
@@ -286,13 +284,10 @@ def music(request: str) -> str:
 
             p_end = time.time() + focus_minutes * 60
             with _track_lock:
-                track_snap = dict(_current_track)
-            state.write({
-                **track_snap, "playing": True,
-                "pomo_phase": "focus", "pomo_cycle": cycle + 1, "pomo_total": cycles,
-                "pomo_phase_end": p_end, "pomo_focus_min": focus_minutes,
-                "pomo_break_min": break_minutes,
-            })
+                _current_track["pomo_phase"] = "focus"
+                _current_track["pomo_cycle"] = cycle + 1
+                _current_track["pomo_phase_end"] = p_end
+            state.write({**_current_track, "playing": True})
 
             # Prefetch next track in background, swap every ~3 minutes
             swap_interval = 180
@@ -342,13 +337,10 @@ def music(request: str) -> str:
 
             p_end = time.time() + actual_break * 60
             with _track_lock:
-                track_snap = dict(_current_track)
-            state.write({
-                **track_snap, "playing": True,
-                "pomo_phase": phase, "pomo_cycle": cycle + 1, "pomo_total": cycles,
-                "pomo_phase_end": p_end, "pomo_focus_min": focus_minutes,
-                "pomo_break_min": break_minutes,
-            })
+                _current_track["pomo_phase"] = phase
+                _current_track["pomo_cycle"] = cycle + 1
+                _current_track["pomo_phase_end"] = p_end
+            state.write({**_current_track, "playing": True})
 
             while time.time() < p_end and not _pomodoro_stop.is_set():
                 _pomodoro_stop.wait(timeout=1)
@@ -382,8 +374,22 @@ def play_audio(file_path: str, loop: bool = False) -> str:
         loop: If True, loop the track continuously.
     """
     if loop:
-        return player.play_loop(file_path)
-    return player.play(file_path, background=True)
+        result = player.play_loop(file_path)
+    else:
+        result = player.play(file_path, background=True)
+
+    # Write state so statusline shows what's playing
+    fp = Path(file_path)
+    with _track_lock:
+        global _current_track
+        _current_track = {
+            "track_name": fp.stem.replace("_", " "),
+            "track_file": fp.name,
+            "track_source": "local",
+            "track_start": time.time(),
+            "track_duration": _get_duration(file_path),
+        }
+    return result
 
 
 @mcp.tool()
