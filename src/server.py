@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Productivity Music MCP Server — GLM 5.1 DJ-managed, multi-source audio plugin."""
 
+import atexit
 import os
 import queue
+import signal
 import threading
 import time
 from pathlib import Path
@@ -18,6 +20,24 @@ from . import player, dj_agent, state
 from .sources import local_cache, procedural, lyria, minimax_music, freesound, youtube
 
 mcp = FastMCP("productivity-music")
+
+
+# Cleanup: kill ffplay when MCP server exits (Ctrl+C, SIGTERM, etc.)
+def _cleanup():
+    player.stop()
+    state.clear()
+
+atexit.register(_cleanup)
+
+def _signal_handler(sig, frame):
+    _cleanup()
+    raise SystemExit(0)
+
+for _sig in (signal.SIGTERM, signal.SIGINT):
+    try:
+        signal.signal(_sig, _signal_handler)
+    except (OSError, ValueError):
+        pass  # can't set signal handler in non-main thread
 
 _pomodoro_stop = threading.Event()
 _pomodoro_thread: threading.Thread | None = None
