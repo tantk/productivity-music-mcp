@@ -130,10 +130,21 @@ def generate_drone(
     }
 
 
+# Neuroscience-tuned defaults based on brain.fm research:
+# - Focus: 16 Hz beta (sweet spot from Nature 2024 study, N=677)
+# - Relax/Break: 10 Hz alpha (relaxed wakefulness, recovery)
+# - Meditate: 6 Hz theta (deep relaxation, introspection)
+# - Sleep: 2 Hz delta (slow-wave sleep induction)
+# - Energize: 20 Hz high-beta (alertness, motivation)
 MOOD_MAP = {
-    "focus": lambda d: generate_binaural_beats(d, beat_freq=14.0),
+    "focus": lambda d: generate_binaural_beats(d, beat_freq=16.0),
+    "pomodoro_focus": lambda d: generate_binaural_beats(d, beat_freq=16.0),
     "calm": lambda d: generate_drone(d, base_freq=55.0),
+    "relax": lambda d: generate_binaural_beats(d, beat_freq=10.0),
+    "break": lambda d: generate_binaural_beats(d, beat_freq=10.0),
+    "pomodoro_break": lambda d: generate_rain(d),
     "meditate": lambda d: generate_binaural_beats(d, beat_freq=6.0),
+    "sleep": lambda d: generate_binaural_beats(d, beat_freq=2.0, base_freq=100.0),
     "rain": lambda d: generate_rain(d),
     "noise": lambda d: generate_pink_noise(d),
     "energize": lambda d: generate_binaural_beats(d, beat_freq=20.0),

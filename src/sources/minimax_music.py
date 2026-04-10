@@ -84,15 +84,52 @@ def generate(
     return {"error": f"Timed out after {timeout}s waiting for generation"}
 
 
+# MiniMax uses lyrics-style prompts with [inst] tags for instrumental sections.
+# Neuroscience-optimized based on brain.fm research.
 MOOD_PROMPTS = {
-    "focus": "Calm instrumental lo-fi beat for deep work and concentration. "
-    "Soft piano, warm pads, subtle vinyl crackle, 70 BPM, relaxing and steady.",
-    "calm": "Peaceful ambient music for relaxation. Gentle strings, soft piano, "
-    "nature-inspired textures, 60 BPM, serene and meditative.",
-    "energize": "Upbeat electronic instrumental for energy and motivation. "
-    "Driving synths, punchy drums, 120 BPM, positive and uplifting.",
-    "break": "Light cheerful acoustic instrumental for a short break. "
-    "Warm guitar, ukulele, light percussion, 90 BPM, cozy and pleasant.",
+    "focus": (
+        "Calm instrumental lo-fi for deep focus. Rhodes piano with subtle tremolo, "
+        "warm analog synth pads, vinyl crackle texture, soft brushed drums, sine sub bass. "
+        "70 BPM, C major. Steady-state, no changes, no builds, no drops. "
+        "Repetitive 4-bar loop, designed to fade into background. No vocals."
+    ),
+    "pomodoro_focus": (
+        "Perfectly loopable focus music for a 25-minute Pomodoro work session. "
+        "Rhodes piano repeating simple 2-bar pattern, warm wide pad, vinyl crackle, "
+        "gentle brushed hi-hat, soft kick on 1 and 3, sine sub bass. "
+        "72 BPM, G major. Pure steady-state — end matches beginning exactly. "
+        "No variation, no evolution. Background infrastructure for the mind. No vocals."
+    ),
+    "calm": (
+        "Peaceful ambient for relaxation and recovery. Gentle piano single notes "
+        "with lots of space, ethereal string pad, wind chimes with reverb, "
+        "nature-inspired textures. 55 BPM, free-flowing. "
+        "Spacious, open, unhurried. No drums, no rhythm. No vocals."
+    ),
+    "pomodoro_break": (
+        "Refreshing break music — complete contrast to focused work. "
+        "Nature sounds, gentle acoustic guitar, wind chimes, bird songs. "
+        "No fixed tempo, free-flowing, F major. "
+        "Should feel like stepping outside into fresh air. No vocals."
+    ),
+    "energize": (
+        "Upbeat electronic instrumental for energy and motivation. "
+        "Bright plucked synth arpeggios, driving four-on-the-floor kick, "
+        "crisp hi-hats, warm saw bass, uplifting chord stabs. "
+        "118 BPM, F major. Positive and forward-moving. No vocals."
+    ),
+    "break": (
+        "Light cheerful acoustic for a short Pomodoro break. "
+        "Warm fingerpicked acoustic guitar, light ukulele, soft shaker, "
+        "round upright bass, distant melodica. 85 BPM, D major. "
+        "Warm and cozy, like a sunny coffee break. No vocals."
+    ),
+    "sleep": (
+        "Deep sleep ambient drone. Very deep sub bass drone below 40Hz, "
+        "dark evolving pad with extremely slow filter sweep, "
+        "occasional distant reverbed piano note every 20 seconds. "
+        "No tempo, no rhythm, D minor. Heavy, enveloping, sinking. No vocals."
+    ),
 }
 
 

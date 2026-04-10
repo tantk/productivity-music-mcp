@@ -6,7 +6,7 @@ import threading
 from pathlib import Path
 
 _current_process: subprocess.Popen | None = None
-_lock = threading.Lock()
+_lock = threading.RLock()  # Reentrant lock — stop() can be called inside play()/play_loop()
 
 
 def _command_exists(cmd: str) -> bool:
@@ -30,11 +30,7 @@ def _get_play_command(file_path: str) -> list[str]:
             if _command_exists(cmd):
                 if cmd == "ffplay":
                     return [
-                        "ffplay",
-                        "-nodisp",
-                        "-autoexit",
-                        "-loglevel",
-                        "quiet",
+                        "ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet",
                         file_path,
                     ]
                 return [cmd, file_path]
@@ -43,8 +39,7 @@ def _get_play_command(file_path: str) -> list[str]:
         )
     elif system == "Windows":
         return [
-            "powershell",
-            "-c",
+            "powershell", "-c",
             f'(New-Object Media.SoundPlayer "{file_path}").PlaySync()',
         ]
     raise RuntimeError(f"Unsupported platform: {system}")
@@ -81,36 +76,13 @@ def play_loop(file_path: str) -> str:
 
     with _lock:
         stop()
-        system = platform.system()
-        if system == "Darwin":
-            if _command_exists("ffplay"):
-                cmd = [
-                    "ffplay",
-                    "-nodisp",
-                    "-loop",
-                    "0",
-                    "-loglevel",
-                    "quiet",
-                    str(path),
-                ]
-            else:
-                return "Error: Looping requires ffplay on macOS. Install ffmpeg."
-        elif system == "Linux":
-            if _command_exists("ffplay"):
-                cmd = [
-                    "ffplay",
-                    "-nodisp",
-                    "-loop",
-                    "0",
-                    "-loglevel",
-                    "quiet",
-                    str(path),
-                ]
-            else:
-                return "Error: Looping requires ffplay. Install ffmpeg."
-        else:
-            return "Error: Looping not supported on this platform."
+        if not _command_exists("ffplay"):
+            return "Error: Looping requires ffplay. Install ffmpeg."
 
+        cmd = [
+            "ffplay", "-nodisp", "-loop", "0", "-loglevel", "quiet",
+            str(path),
+        ]
         _current_process = subprocess.Popen(
             cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
@@ -118,20 +90,23 @@ def play_loop(file_path: str) -> str:
 
 
 def stop() -> str:
+    """Stop playback. Thread-safe (uses RLock so can be called inside play/play_loop)."""
     global _current_process
-    if _current_process is not None:
-        try:
-            _current_process.terminate()
-            _current_process.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            _current_process.kill()
-        except Exception:
-            pass
-        finally:
-            _current_process = None
-        return "Audio stopped."
-    return "No audio is currently playing."
+    with _lock:
+        if _current_process is not None:
+            try:
+                _current_process.terminate()
+                _current_process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                _current_process.kill()
+            except Exception:
+                pass
+            finally:
+                _current_process = None
+            return "Audio stopped."
+        return "No audio is currently playing."
 
 
 def is_playing() -> bool:
-    return _current_process is not None and _current_process.poll() is None
+    with _lock:
+        return _current_process is not None and _current_process.poll() is None
