@@ -175,6 +175,28 @@ Format: {"focus": 25, "break": 5, "cycles": 4, "reason": "why"}"""
     return {"focus": 25, "break": 5, "cycles": 4, "reason": "Default classic preset"}
 
 
+_user_context: str = ""
+
+
+@mcp.tool()
+def set_context(context: str) -> str:
+    """Tell the DJ what you're working on so it picks better music and timer.
+
+    Call this anytime to update. The DJ remembers it for the session.
+    Any agent/model can call this -- it doesn't require a smart agent.
+
+    Args:
+        context: What you're doing, how you're feeling, what phase of work.
+                 e.g., "debugging auth module, been stuck for an hour"
+                 e.g., "starting fresh on a new feature, feeling good"
+                 e.g., "writing docs, low intensity"
+                 e.g., "final push before deadline, need to stay sharp"
+    """
+    global _user_context
+    _user_context = context
+    return f"Context set: {context}\nThe DJ will use this for music and timer decisions."
+
+
 @mcp.tool()
 def music(request: str) -> str:
     """Start productivity music with an AI-recommended Pomodoro timer.
@@ -203,6 +225,11 @@ def music(request: str) -> str:
     """
     global _pomodoro_thread, _current_track
 
+    # Enrich request with user context if available
+    full_request = request
+    if _user_context:
+        full_request = f"{request}. User context: {_user_context}"
+
     # Stop anything currently playing
     if not _pomodoro_stop.is_set():
         _pomodoro_stop.set()
@@ -220,7 +247,7 @@ def music(request: str) -> str:
     timer_reason = timer.get("reason", "")
 
     # Play initial track
-    result = dj_agent.recommend_and_play(request)
+    result = dj_agent.recommend_and_play(full_request)
 
     if "error" in result:
         return f"Error: {result['error']}\nDJ reasoning: {result.get('dj_decision', {}).get('reason', 'N/A')}"
