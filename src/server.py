@@ -258,36 +258,38 @@ def music(request: str) -> str:
 
     full_request = f"{request}. User context: {_user_context}" if _user_context else request
 
-    # Stop anything currently playing
+    # Signal any existing pomodoro to stop (non-blocking)
     _pomodoro_stop.set()
-    if _pomodoro_thread and _pomodoro_thread.is_alive():
-        _pomodoro_thread.join(timeout=5)
-    player.stop()
 
-    # ─── INSTANT START: play cached music immediately ───
-    display_name = "Loading..."
-    cached = local_cache.list_tracks()
-    music_tracks = [t for t in cached if t["format"] == "mp3" and t["size_kb"] > 1000]
-    if music_tracks:
-        import random
-        pick = random.choice(music_tracks)
-        player.play_loop(pick["path"])
-        display_name = pick["name"].replace("_", " ")
-        with _track_lock:
-            _current_track = {
-                "track_name": display_name,
-                "track_file": pick["name"] + "." + pick["format"],
-                "track_source": "cache",
-                "track_start": time.time(),
-                "track_duration": _get_duration(pick["path"]),
-            }
-        _write_state()
+    # Everything runs in background — return instantly
+    def _start():
+        global _pomodoro_thread
 
-    # ─── EVERYTHING ELSE IN BACKGROUND — return instantly ───
-    _pomodoro_stop.clear()
+        # Wait for old pomodoro to finish (in background, not blocking the tool)
+        if _pomodoro_thread and _pomodoro_thread.is_alive():
+            _pomodoro_thread.join(timeout=5)
+        player.stop()
 
-    def _background_setup():
-        """Find real music, pick timer, start pomodoro — all in background."""
+        # Play cached music immediately
+        cached = local_cache.list_tracks()
+        music_tracks = [t for t in cached if t["format"] == "mp3" and t["size_kb"] > 1000]
+        if music_tracks:
+            import random
+            pick = random.choice(music_tracks)
+            player.play_loop(pick["path"])
+            with _track_lock:
+                _current_track = {
+                    "track_name": pick["name"].replace("_", " "),
+                    "track_file": pick["name"] + "." + pick["format"],
+                    "track_source": "cache",
+                    "track_start": time.time(),
+                    "track_duration": _get_duration(pick["path"]),
+                }
+            _write_state()
+
+        _pomodoro_stop.clear()
+
+        # Find real music, pick timer, start pomodoro
         # Pick timer + music in parallel
         timer_result = {}
         music_result = {}
@@ -399,15 +401,10 @@ def music(request: str) -> str:
         player.stop()
         _clear_track()
 
-    _pomodoro_thread = threading.Thread(target=_background_setup, daemon=True)
+    _pomodoro_thread = threading.Thread(target=_start, daemon=True)
     _pomodoro_thread.start()
 
-    return (
-        f"Now playing: {display_name}\n"
-        f"Music started. DJ is finding the best track in the background.\n"
-        f"Pomodoro timer will start shortly.\n"
-        f"Say 'stop' to end."
-    )
+    return "Music starting. Say 'stop' to end."
 
 
 @mcp.tool()
@@ -441,8 +438,6 @@ def play_audio(file_path: str, loop: bool = False) -> str:
 def stop() -> str:
     """Stop the currently playing audio and Pomodoro timer."""
     _pomodoro_stop.set()
-    if _pomodoro_thread and _pomodoro_thread.is_alive():
-        _pomodoro_thread.join(timeout=3)
     player.stop()
     _clear_track()
     return "Audio stopped."
