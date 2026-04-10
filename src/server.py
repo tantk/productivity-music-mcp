@@ -239,19 +239,40 @@ def music(request: str) -> str:
     with _track_lock:
         _current_track = {}
 
-    # ─── INSTANT START: play procedural sound immediately ───
-    from .sources import procedural as _proc
-    instant = _proc.generate_pink_noise(duration=300)
-    if "path" in instant:
-        player.play_loop(instant["path"])
+    # ─── INSTANT START: play cached music or procedural drone immediately ───
+    # Priority: cached music > procedural drone (never pink noise)
+    instant = None
+    cached = local_cache.list_tracks()
+    # Prefer cached mp3s over short clips -- real music first
+    music_tracks = [t for t in cached if t["format"] == "mp3" and t["size_kb"] > 1000]
+    if music_tracks:
+        import random
+        pick = random.choice(music_tracks)
+        instant = pick
+        player.play_loop(pick["path"])
         with _track_lock:
             _current_track = {
-                "track_name": "Starting up...",
-                "track_file": instant["name"],
-                "track_source": "procedural",
+                "track_name": pick["name"].replace("_", " "),
+                "track_file": pick["name"] + "." + pick["format"],
+                "track_source": "cache",
                 "track_start": time.time(),
-                "track_duration": 300,
+                "track_duration": _get_duration(pick["path"]),
             }
+    else:
+        # No cached music -- generate a warm ambient drone (sounds musical, not noise)
+        from .sources import procedural as _proc
+        instant_result = _proc.generate_drone(duration=300, base_freq=55.0)
+        if "path" in instant_result:
+            instant = instant_result
+            player.play_loop(instant_result["path"])
+            with _track_lock:
+                _current_track = {
+                    "track_name": "Ambient Drone",
+                    "track_file": instant_result["name"],
+                    "track_source": "procedural",
+                    "track_start": time.time(),
+                    "track_duration": 300,
+                }
 
     # ─── BACKGROUND: find real music + pick timer in parallel ───
     timer_result = {}
