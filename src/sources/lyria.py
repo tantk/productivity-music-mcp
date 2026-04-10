@@ -55,29 +55,32 @@ def generate(prompt: str, filename: str = "lyria_track.mp3") -> dict:
 
 
 def _name_track(description: str) -> str:
-    """Ask GLM to name the track from its description."""
-    gmi_key = os.environ.get("GMI_INFER")
-    if not gmi_key:
+    """Ask Gemini to name the track from its description."""
+    api_key = os.environ.get("GOOGLE_API")
+    if not api_key:
         return ""
     try:
-        from openai import OpenAI
-        client = OpenAI(api_key=gmi_key, base_url="https://api.gmi-serving.com/v1")
-        response = client.chat.completions.create(
-            model="deepseek-ai/DeepSeek-V3.2",
-            messages=[
-                {"role": "system", "content": (
+        from google import genai
+        from google.genai import types
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=description[:300],
+            config=types.GenerateContentConfig(
+                system_instruction=(
                     "You name music tracks. Given a description, respond with ONLY "
                     "a short creative title (2-5 words). No quotes, no explanation. "
                     "Examples: Midnight Rain, Amber Glow, Still Waters, Quiet Engine, "
                     "Dusk Protocol, Warm Drift, Soft Orbit"
-                )},
-                {"role": "user", "content": description[:300]},
-            ],
-            max_tokens=15,
-            temperature=0.9,
+                ),
+                max_output_tokens=15,
+                temperature=0.9,
+            ),
         )
-        title = response.choices[0].message.content.strip().strip('"\'')
-        return title if len(title) < 40 else title[:40]
+        if response.candidates and response.candidates[0].content.parts:
+            title = response.candidates[0].content.parts[0].text.strip().strip('"\'')
+            return title if len(title) < 40 else title[:40]
+        return ""
     except Exception:
         return ""
 

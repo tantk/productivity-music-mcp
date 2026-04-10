@@ -194,44 +194,31 @@ def _make_track_info(result: dict) -> dict:
 
 
 def _auto_pick_timer() -> dict:
-    """Ask GLM to pick optimal timer settings."""
+    """Ask Gemini to pick optimal timer settings."""
     import json as _json
     context = dj_agent._get_context()
-    client = dj_agent._get_client()
 
     prompt = """Pick the best Pomodoro preset for right now. Respond JSON only.
 
 Rules:
-- Early morning (5-9): Classic 25/5 x4 — gentle start
-- Morning (9-12): Deep Work 50/10 x3 — peak focus hours
-- Midday (12-14): Sprint 15/3 x4 — post-lunch, short bursts
+- Early morning (5-9): Classic 25/5 x4
+- Morning (9-12): Deep Work 50/10 x3
+- Midday (12-14): Sprint 15/3 x4
 - Afternoon (14-17): Classic 25/5 x4 or Deep Work 50/10 x3
-- Evening (17-21): Sprint 15/3 x3 — winding down, shorter
-- Night (21+): Classic 25/5 x2 — limited, don't overwork
+- Evening (17-21): Sprint 15/3 x3
+- Night (21+): Classic 25/5 x2
 
 Format: {"focus": 25, "break": 5, "cycles": 4, "reason": "why"}"""
 
     user_msg = f"Time: {context['time_of_day']} ({context['hour']}:00, {context['day_of_week']})"
 
-    for model in dj_agent.MODEL_CHAIN:
-        try:
-            response = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": prompt},
-                    {"role": "user", "content": user_msg},
-                ],
-                max_tokens=150,
-                temperature=0.3,
-            )
-            content = (response.choices[0].message.content or "").strip()
-            if content.startswith("```"):
-                content = content.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-            return _json.loads(content)
-        except Exception:
-            continue
-
-    return {"focus": 25, "break": 5, "cycles": 4, "reason": "Default classic preset"}
+    try:
+        content = dj_agent._chat(prompt, user_msg, max_tokens=150, temperature=0.3)
+        if content.startswith("```"):
+            content = content.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+        return _json.loads(content)
+    except Exception:
+        return {"focus": 25, "break": 5, "cycles": 4, "reason": "Default classic preset"}
 
 
 # ─── MCP Tools ───
@@ -630,32 +617,24 @@ def list_sources() -> str:
 
 @mcp.tool()
 def recommend_session() -> str:
-    """Ask the GLM DJ to recommend a Pomodoro preset based on time of day."""
+    """Ask the DJ to recommend a Pomodoro preset based on time of day."""
     import json
     context = dj_agent._get_context()
-    client = dj_agent._get_client()
 
     prompt = """Recommend the best Pomodoro preset. Respond JSON only:
 {"preset": "classic|deep_work|sprint", "focus": 25, "break": 5, "cycles": 4, "reason": "why"}"""
 
     user_msg = f"Time: {context['time_of_day']} ({context['hour']}:00, {context['day_of_week']})"
 
-    for model in dj_agent.MODEL_CHAIN:
-        try:
-            response = client.chat.completions.create(
-                model=model,
-                messages=[{"role": "system", "content": prompt}, {"role": "user", "content": user_msg}],
-                max_tokens=150, temperature=0.7,
-            )
-            content = (response.choices[0].message.content or "").strip()
-            if content.startswith("```"):
-                content = content.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-            rec = json.loads(content)
-            return (
-                f"Recommended: {rec.get('preset', 'classic').replace('_', ' ').title()}\n"
-                f"Settings: {rec.get('focus', 25)}min focus / {rec.get('break', 5)}min break x {rec.get('cycles', 4)} cycles\n"
-                f"Reason: {rec.get('reason', '')}"
-            )
-        except Exception:
-            continue
-    return "Recommended: Classic Pomodoro (25/5 x 4)"
+    try:
+        content = dj_agent._chat(prompt, user_msg, max_tokens=150, temperature=0.7)
+        if content.startswith("```"):
+            content = content.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+        rec = json.loads(content)
+        return (
+            f"Recommended: {rec.get('preset', 'classic').replace('_', ' ').title()}\n"
+            f"Settings: {rec.get('focus', 25)}min focus / {rec.get('break', 5)}min break x {rec.get('cycles', 4)} cycles\n"
+            f"Reason: {rec.get('reason', '')}"
+        )
+    except Exception:
+        return "Recommended: Classic Pomodoro (25/5 x 4)"

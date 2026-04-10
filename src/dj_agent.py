@@ -1,30 +1,47 @@
-"""GLM 5.1 DJ Agent — picks music sources and manages the listening experience."""
+"""AI DJ Agent — picks music sources and manages the listening experience."""
 
 import json
 import os
 import time
 from datetime import datetime
-from openai import OpenAI
 from pathlib import Path
 
 from .sources import local_cache, procedural, lyria, minimax_music, freesound, youtube, brainfm
 
-GMI_BASE_URL = "https://api.gmi-serving.com/v1"
-# GLM first (hackathon requirement), DeepSeek as fallback.
-# All via GMI Cloud inference.
+# Model chain: try each until one returns valid JSON
 MODEL_CHAIN = [
-    "zai-org/GLM-5.1-FP8",
-    "deepseek-ai/DeepSeek-V3.2",
+    "gemini-2.5-flash",
 ]
 
 _history: list[dict] = []
 
 
-def _get_client() -> OpenAI:
-    return OpenAI(
-        api_key=os.environ.get("GMI_INFER", ""),
-        base_url=GMI_BASE_URL,
+def _get_client():
+    """Get Google GenAI client."""
+    from google import genai
+    return genai.Client(api_key=os.environ.get("GOOGLE_API", ""))
+
+
+def _chat(system_prompt: str, user_msg: str, max_tokens: int = 500, temperature: float = 0.7) -> str:
+    """Send a chat message via Gemini and return the text response."""
+    client = _get_client()
+    from google.genai import types
+
+    response = client.models.generate_content(
+        model=MODEL_CHAIN[0],
+        contents=user_msg,
+        config=types.GenerateContentConfig(
+            system_instruction=system_prompt,
+            max_output_tokens=max_tokens,
+            temperature=temperature,
+        ),
     )
+
+    if response.candidates and response.candidates[0].content.parts:
+        for part in response.candidates[0].content.parts:
+            if part.text:
+                return part.text
+    return ""
 
 
 def _get_context() -> dict:
@@ -180,7 +197,6 @@ Source-specific params:
 
 def pick(user_request: str) -> dict:
     context = _get_context()
-    client = _get_client()
 
     user_msg = f"""Context:
 - Time: {context["time_of_day"]} ({context["hour"]}:00, {context["day_of_week"]})
@@ -191,48 +207,29 @@ def pick(user_request: str) -> dict:
 
 User request: {user_request}"""
 
-    last_error = None
-    for model in MODEL_CHAIN:
-        try:
-            response = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": user_msg},
-                ],
-                max_tokens=500,
-                temperature=0.7,
-            )
+    try:
+        content = _chat(SYSTEM_PROMPT, user_msg)
+        if not content.strip():
+            raise ValueError("Empty response")
 
-            content = response.choices[0].message.content or ""
-            if not content.strip():
-                last_error = f"{model} returned empty response"
-                continue
-
+        content = content.strip()
+        if content.startswith("```"):
+            content = content.split("\n", 1)[1]
+            if content.endswith("```"):
+                content = content[:-3]
             content = content.strip()
-            if content.startswith("```"):
-                content = content.split("\n", 1)[1]
-                if content.endswith("```"):
-                    content = content[:-3]
-                content = content.strip()
 
-            decision = json.loads(content)
-            decision["model"] = model
-            return decision
+        decision = json.loads(content)
+        decision["model"] = MODEL_CHAIN[0]
+        return decision
 
-        except json.JSONDecodeError as e:
-            last_error = f"{model} returned invalid JSON: {e}"
-            continue
-        except Exception as e:
-            last_error = f"{model} error: {e}"
-            continue
-
-    return {
-        "source": "procedural",
-        "action": "generate",
-        "params": {"type": "pink_noise", "duration": 60},
-        "reason": f"All DJ models failed ({last_error}), falling back to procedural",
-    }
+    except Exception as e:
+        return {
+            "source": "brainfm",
+            "action": "download",
+            "params": {"mood": "focus"},
+            "reason": f"DJ error ({e}), falling back to Brain.fm",
+        }
 
 
 def execute(decision: dict) -> dict:
@@ -355,23 +352,12 @@ Phase styles:
         f"Generate one line:"
     )
 
-    for model in MODEL_CHAIN:
-        try:
-            response = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": prompt},
-                    {"role": "user", "content": user_msg},
-                ],
-                max_tokens=30,
-                temperature=1.0,
-            )
-            content = response.choices[0].message.content or ""
-            quote = content.strip().strip('"\'')
-            return quote[:60] if quote else ""
-        except Exception:
-            continue
-    return ""
+    try:
+        content = _chat(prompt, user_msg, max_tokens=30, temperature=1.0)
+        quote = content.strip().strip('"\'')
+        return quote[:60] if quote else ""
+    except Exception:
+        return ""
 
 
 def recommend_and_play(user_request: str) -> dict:
