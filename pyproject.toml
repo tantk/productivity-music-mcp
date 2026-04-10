@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "productivity-music-mcp"
+version = "0.1.0"
+description = "AI-powered productivity music MCP server — focus, relax, sleep music with GLM DJ agent"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = [
+    "mcp>=1.0.0",
+    "openai>=1.0.0",
+    "google-genai>=1.0.0",
+    "requests>=2.28.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+youtube = ["yt-dlp>=2024.0.0"]
+
+[project.scripts]
+productivity-music-mcp = "src:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]

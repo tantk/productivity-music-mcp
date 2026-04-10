@@ -1,0 +1,28 @@
+# Secrets
+.env
+opencode.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+.ruff_cache/
+
+# Generated audio
+output/*.mp3
+output/*.wav
+cache/*.mp3
+cache/*.wav
+!.gitkeep
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
