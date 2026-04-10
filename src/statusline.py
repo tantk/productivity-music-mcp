@@ -37,8 +37,8 @@ def _run():
     except Exception:
         s = {}
 
-    now = int(time.time())
-    updated = int(float(s.get("updated_at", 0)))
+    now = time.time()
+    updated = float(s.get("updated_at", 0))
     age = now - updated
 
     # Show status as long as playing=true, even if poller is slow.

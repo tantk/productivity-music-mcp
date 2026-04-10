@@ -3,9 +3,9 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "productivity-music-mcp"
+name = "focusline"
 version = "0.1.0"
-description = "AI-powered productivity music MCP server — focus, relax, sleep music with GLM DJ agent"
+description = "FocusLine — AI-powered focus music + Pomodoro timer for coding CLIs, powered by GLM DJ agent"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}

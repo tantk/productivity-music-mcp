@@ -227,11 +227,12 @@ def music(request: str) -> str:
     source = result.get("source", "unknown")
     reason = result.get("dj_decision", {}).get("reason", "")
 
-    _current_track = _make_track_info(result)
-    display_name = _current_track["track_name"]
+    with _track_lock:
+        _current_track = _make_track_info(result)
+        display_name = _current_track["track_name"]
 
     # Start Pomodoro timer
-    _pomodoro_active = True
+    _pomodoro_stop.clear()
     phase_end = time.time() + focus_minutes * 60
 
     # Write initial state with pomodoro
@@ -246,23 +247,29 @@ def music(request: str) -> str:
         "pomo_break_min": break_minutes,
     })
 
-    def _update_track(result):
-        """Update current track info from a DJ result."""
-        global _current_track
+    def _set_track(result):
+        """Thread-safe track update."""
         if "path" not in result:
             return
-        _current_track = _make_track_info(result)
+        with _track_lock:
+            nonlocal _current_track
+            _current_track = _make_track_info(result)
 
-    def _prefetch(prompt: str, results: list):
-        """Generate a track in background, store in results list."""
+    prefetch_q = queue.Queue(maxsize=1)
+
+    def _prefetch(prompt: str):
+        """Generate a track in background, put in queue."""
         r = dj_agent.recommend_and_play(prompt)
-        results.append(r)
+        try:
+            prefetch_q.put_nowait(r)
+        except queue.Full:
+            pass
 
     def run_pomodoro():
-        global _pomodoro_active, _current_track
+        global _current_track
 
         for cycle in range(cycles):
-            if not _pomodoro_active:
+            if _pomodoro_stop.is_set():
                 break
 
             # ─── Focus phase ───
@@ -275,67 +282,48 @@ def music(request: str) -> str:
                 )
                 if "path" in result:
                     player.play_loop(result["path"])
-                    _update_track(result)
+                    _set_track(result)
 
             p_end = time.time() + focus_minutes * 60
+            with _track_lock:
+                track_snap = dict(_current_track)
             state.write({
-                **_current_track, "playing": True,
+                **track_snap, "playing": True,
                 "pomo_phase": "focus", "pomo_cycle": cycle + 1, "pomo_total": cycles,
                 "pomo_phase_end": p_end, "pomo_focus_min": focus_minutes,
                 "pomo_break_min": break_minutes,
             })
 
-            # During focus: prefetch the next track in background
-            # Swap tracks every ~3 minutes to keep it fresh
-            swap_interval = 180  # seconds
+            # Prefetch next track in background, swap every ~3 minutes
+            swap_interval = 180
             next_swap = time.time() + swap_interval
-            # Start prefetching the next track immediately
-            prefetch_results = []
-            prefetch_thread = threading.Thread(
+            threading.Thread(
                 target=_prefetch,
-                args=(
-                    f"Focus music variation {cycle+1}. "
-                    "Generate something DIFFERENT from what's playing. "
-                    "Try a different mood within focus: lo-fi, ambient, piano, drone. "
-                    "Beta-wave, no vocals, steady-state.",
-                    prefetch_results,
-                ),
+                args=(f"Focus music variation {cycle+1}. Different style. "
+                      "Beta-wave, no vocals, steady-state.",),
                 daemon=True,
-            )
-            prefetch_thread.start()
+            ).start()
 
-            while time.time() < p_end and _pomodoro_active:
-                # Time to swap in the prefetched track?
-                if time.time() >= next_swap and prefetch_results:
-                    new_track = prefetch_results.pop(0)
-                    if "path" in new_track:
-                        player.play_loop(new_track["path"])
-                        _update_track(new_track)
-                        state.write({
-                            **_current_track, "playing": True,
-                            "pomo_phase": "focus", "pomo_cycle": cycle + 1,
-                            "pomo_total": cycles, "pomo_phase_end": p_end,
-                            "pomo_focus_min": focus_minutes,
-                            "pomo_break_min": break_minutes,
-                        })
+            while time.time() < p_end and not _pomodoro_stop.is_set():
+                # Swap in prefetched track?
+                if time.time() >= next_swap:
+                    try:
+                        new_track = prefetch_q.get_nowait()
+                        if "path" in new_track:
+                            player.play_loop(new_track["path"])
+                            _set_track(new_track)
+                        next_swap = time.time() + swap_interval
+                        threading.Thread(
+                            target=_prefetch,
+                            args=("Another focus variation. Different style. "
+                                  "Beta-wave, no vocals, steady-state.",),
+                            daemon=True,
+                        ).start()
+                    except queue.Empty:
+                        pass
+                _pomodoro_stop.wait(timeout=1)
 
-                    # Start prefetching the next one
-                    next_swap = time.time() + swap_interval
-                    prefetch_results.clear()
-                    prefetch_thread = threading.Thread(
-                        target=_prefetch,
-                        args=(
-                            "Another focus music variation. Different style. "
-                            "Beta-wave, no vocals, steady-state, loopable.",
-                            prefetch_results,
-                        ),
-                        daemon=True,
-                    )
-                    prefetch_thread.start()
-
-                time.sleep(1)
-
-            if not _pomodoro_active:
+            if _pomodoro_stop.is_set():
                 break
 
             # ─── Break phase ───
@@ -346,26 +334,27 @@ def music(request: str) -> str:
 
             result = dj_agent.recommend_and_play(
                 f"Pomodoro {'long' if is_long else 'short'} break. "
-                "Alpha-wave nature sounds or light acoustic, spacious, relieving. "
-                "Complete contrast from focus music."
+                "Alpha-wave nature sounds or light acoustic, spacious, relieving."
             )
             if "path" in result:
                 player.play_loop(result["path"])
-                _update_track(result)
+                _set_track(result)
 
             p_end = time.time() + actual_break * 60
+            with _track_lock:
+                track_snap = dict(_current_track)
             state.write({
-                **_current_track, "playing": True,
+                **track_snap, "playing": True,
                 "pomo_phase": phase, "pomo_cycle": cycle + 1, "pomo_total": cycles,
                 "pomo_phase_end": p_end, "pomo_focus_min": focus_minutes,
                 "pomo_break_min": break_minutes,
             })
 
-            while time.time() < p_end and _pomodoro_active:
-                time.sleep(1)
+            while time.time() < p_end and not _pomodoro_stop.is_set():
+                _pomodoro_stop.wait(timeout=1)
 
-        _pomodoro_active = False
-        _current_track = {}
+        with _track_lock:
+            _current_track = {}
         player.stop()
         state.clear()
 
@@ -399,10 +388,13 @@ def play_audio(file_path: str, loop: bool = False) -> str:
 
 @mcp.tool()
 def stop() -> str:
-    """Stop the currently playing audio."""
-    global _pomodoro_active, _current_track
-    _pomodoro_active = False
-    _current_track = {}
+    """Stop the currently playing audio and Pomodoro timer."""
+    global _current_track
+    _pomodoro_stop.set()
+    if _pomodoro_thread and _pomodoro_thread.is_alive():
+        _pomodoro_thread.join(timeout=3)
+    with _track_lock:
+        _current_track = {}
     state.clear()
     return player.stop()
 
@@ -676,89 +668,62 @@ def pomodoro(focus_minutes: int = 25, break_minutes: int = 5, cycles: int = 4) -
         break_minutes: Break session length (default 5).
         cycles: Number of focus/break cycles (default 4).
     """
-    global _pomodoro_active, _pomodoro_thread
+    global _pomodoro_thread, _current_track
 
-    if _pomodoro_active:
+    if not _pomodoro_stop.is_set() and _pomodoro_thread and _pomodoro_thread.is_alive():
         return "Pomodoro already active. Use stop() to cancel."
 
-    _pomodoro_active = True
-
-    def _write_pomo_state(phase, cycle, phase_end, track_name="", track_source="", reason=""):
-        state.write({
-            "playing": True,
-            "track_name": track_name,
-            "track_source": track_source,
-            "track_start": time.time(),
-            "track_duration": 30.0,
-            "dj_reason": reason,
-            "pomo_phase": phase,
-            "pomo_cycle": cycle,
-            "pomo_total": cycles,
-            "pomo_phase_end": phase_end,
-        })
+    _pomodoro_stop.clear()
 
     def run_pomodoro():
-        global _pomodoro_active
+        global _current_track
         for cycle in range(cycles):
-            if not _pomodoro_active:
+            if _pomodoro_stop.is_set():
                 break
 
-            # Focus session
             phase_end = time.time() + focus_minutes * 60
-            _write_pomo_state("focus", cycle + 1, phase_end)
+            state.write({"playing": True, "pomo_phase": "focus", "pomo_cycle": cycle + 1,
+                         "pomo_total": cycles, "pomo_phase_end": phase_end,
+                         "pomo_focus_min": focus_minutes, "pomo_break_min": break_minutes})
 
             result = dj_agent.recommend_and_play(
                 f"Pomodoro focus session {cycle+1}/{cycles}. "
-                "Need beta-wave (16Hz) steady-state focus music — low salience, "
-                "repetitive, no vocals, no changes. Designed to fade into background."
+                "Beta-wave focus music, no vocals, loopable."
             )
             if "path" in result:
                 player.play_loop(result["path"])
-                _write_pomo_state(
-                    "focus", cycle + 1, phase_end,
-                    Path(result["path"]).name,
-                    result.get("source", ""),
-                    result.get("dj_decision", {}).get("reason", ""),
-                )
+                with _track_lock:
+                    _current_track = _make_track_info(result)
 
-            while time.time() < phase_end and _pomodoro_active:
-                time.sleep(1)
+            while time.time() < phase_end and not _pomodoro_stop.is_set():
+                _pomodoro_stop.wait(timeout=1)
 
-            if not _pomodoro_active:
+            if _pomodoro_stop.is_set():
                 break
 
             player.stop()
-
-            # Break session
-            is_long_break = (cycle + 1) == cycles
-            actual_break = break_minutes * 3 if is_long_break else break_minutes
-            phase = "long_break" if is_long_break else "break"
+            is_long = (cycle + 1) == cycles
+            actual_break = break_minutes * 3 if is_long else break_minutes
+            phase = "long_break" if is_long else "break"
             phase_end = time.time() + actual_break * 60
-            _write_pomo_state(phase, cycle + 1, phase_end)
+            state.write({"playing": True, "pomo_phase": phase, "pomo_cycle": cycle + 1,
+                         "pomo_total": cycles, "pomo_phase_end": phase_end,
+                         "pomo_focus_min": focus_minutes, "pomo_break_min": break_minutes})
 
-            if is_long_break:
-                result = dj_agent.recommend_and_play(
-                    "Pomodoro LONG BREAK. Need theta-wave deep rest — "
-                    "nature sounds, spacious, restorative."
-                )
-            else:
-                result = dj_agent.recommend_and_play(
-                    f"Pomodoro short break {cycle+1}/{cycles}. "
-                    "Need alpha-wave break music — nature, spacious, relieving."
-                )
+            result = dj_agent.recommend_and_play(
+                f"Pomodoro {'long' if is_long else 'short'} break. "
+                "Alpha-wave nature sounds, spacious, relieving."
+            )
             if "path" in result:
-                player.play(result["path"], background=True)
-                _write_pomo_state(
-                    phase, cycle + 1, phase_end,
-                    Path(result["path"]).name,
-                    result.get("source", ""),
-                    result.get("dj_decision", {}).get("reason", ""),
-                )
+                player.play_loop(result["path"])
+                with _track_lock:
+                    _current_track = _make_track_info(result)
 
-            while time.time() < phase_end and _pomodoro_active:
-                time.sleep(1)
+            while time.time() < phase_end and not _pomodoro_stop.is_set():
+                _pomodoro_stop.wait(timeout=1)
 
-        _pomodoro_active = False
+        with _track_lock:
+            _current_track = {}
         player.stop()
         state.clear()
 

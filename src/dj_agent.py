@@ -204,8 +204,8 @@ User request: {user_request}"""
                 temperature=0.7,
             )
 
-            content = response.choices[0].message.content
-            if not content:
+            content = response.choices[0].message.content or ""
+            if not content.strip():
                 last_error = f"{model} returned empty response"
                 continue
 
@@ -317,6 +317,8 @@ def execute(decision: dict) -> dict:
             "result": result.get("name", result.get("error", "unknown")),
         }
     )
+    if len(_history) > 50:
+        _history.pop(0)
 
     result["dj_decision"] = decision
     return result
@@ -364,7 +366,8 @@ Phase styles:
                 max_tokens=30,
                 temperature=1.0,
             )
-            quote = response.choices[0].message.content.strip().strip('"\'')
+            content = response.choices[0].message.content or ""
+            quote = content.strip().strip('"\'')
             return quote[:60] if quote else ""
         except Exception:
             continue
