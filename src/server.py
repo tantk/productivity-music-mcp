@@ -49,9 +49,11 @@ def _start_state_poller():
                 quote_generating = False
 
         while True:
-            if _current_track or not _pomodoro_stop.is_set():
-                with _track_lock:
-                    existing = dict(_current_track) if _current_track else {}
+            with _track_lock:
+                has_track = bool(_current_track and _current_track.get("track_name"))
+                existing = dict(_current_track) if has_track else {}
+
+            if has_track:
                 existing["playing"] = True
 
                 # Generate quote in background thread so poller doesn't block
