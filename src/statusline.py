@@ -64,11 +64,8 @@ def _run():
         total_played = raw_elapsed
         tm, ts = divmod(int(total_played), 60)
 
-        source = s.get("track_source", "")
-        source_tag = f" \033[90m[{source}]\033[0m" if source else ""
-
         lines.append(
-            f"\033[32m▶\033[0m {s['track_name']}{source_tag}"
+            f" \033[32m♫\033[0m {s['track_name']}"
         )
 
     # ─── Pomodoro Timer ───
@@ -81,10 +78,8 @@ def _run():
 
         colors = {"focus": "32", "break": "36", "long_break": "34"}
         labels = {"focus": "FOCUS", "break": "BREAK", "long_break": "LONG BREAK"}
-        icons = {"focus": "🎯", "break": "☕", "long_break": "🌿"}
         c = colors.get(phase, "0")
         l = labels.get(phase, phase)
-        icon = icons.get(phase, "🍅")
 
         focus_min = int(float(s.get("pomo_focus_min", 25)))
         break_min = int(float(s.get("pomo_break_min", 5)))
@@ -109,7 +104,7 @@ def _run():
                 dots += "\033[90m○\033[0m"
 
         lines.append(
-            f"{icon} \033[{c}m{l}\033[0m"
+            f" \033[{c}m♦\033[0m \033[{c}m{l}\033[0m"
             f"  {pbar}"
             f"  \033[1m{pm}:{ps:02d}\033[0m"
             f"  {dots}"
@@ -118,7 +113,8 @@ def _run():
     # Motivational quote
     quote = s.get("quote", "")
     if quote:
-        lines.append(f"\033[3;90m  \"{quote}\"\033[0m")
+        lines.append(f"\033[3;90m     \"{quote}\"\033[0m")
+
 
     for line in lines:
         print(line)

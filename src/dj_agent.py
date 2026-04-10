@@ -10,11 +10,11 @@ from pathlib import Path
 from .sources import local_cache, procedural, lyria, minimax_music, freesound, youtube, brainfm
 
 GMI_BASE_URL = "https://api.gmi-serving.com/v1"
-# DeepSeek first — fastest and most reliable for JSON output.
-# GLM as fallback. All via GMI inference.
+# GLM first (hackathon requirement), DeepSeek as fallback.
+# All via GMI Cloud inference.
 MODEL_CHAIN = [
-    "deepseek-ai/DeepSeek-V3.2",
     "zai-org/GLM-5.1-FP8",
+    "deepseek-ai/DeepSeek-V3.2",
 ]
 
 _history: list[dict] = []
