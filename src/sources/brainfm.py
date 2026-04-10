@@ -5,10 +5,6 @@ from . import youtube
 
 # Curated 30-minute focus tracks from brain.fm's official YouTube channel (@brainfmapp)
 FOCUS_TRACKS = [
-    {"id": "bMEUAVOOAls", "title": "Casting Spells", "tag": "Deep Focus, High Neural Effect"},
-    {"id": "Px3-TRXPtws", "title": "Ultraviolets", "tag": "Focus Flow, Medium Neural Effect"},
-    {"id": "L9iFUdkIkBE", "title": "Kyoto", "tag": "Intense Focus, High Neural Effect"},
-    {"id": "9cRPXoJ6S9E", "title": "Golden Hill", "tag": "Deep Focus, High Neural Effect"},
     {"id": "UpPmnnJcy6A", "title": "Dreamlight", "tag": "Focus, Maximum Concentration"},
     {"id": "5NZ9ZUuSYIE", "title": "Jurisprudence", "tag": "Study, Concentration"},
     {"id": "NHOFkcun06s", "title": "Morning Story", "tag": "Focus, Maximum Concentration"},

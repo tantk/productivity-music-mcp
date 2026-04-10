@@ -43,12 +43,14 @@ def download_audio(
         "--extract-audio",
         "--audio-format", "mp3",
         "--audio-quality", "5",
-        "--max-downloads", "1",
-        "--match-filter", f"duration<={max_duration}",
         "--no-playlist",
         "--output", str(out_path),
         url,
     ]
+    # Only add match-filter for searches, not direct URLs
+    if "ytsearch" in url:
+        cmd.insert(-1, "--match-filter")
+        cmd.insert(-1, f"duration<={max_duration}")
 
     try:
         subprocess.run(cmd, capture_output=True, text=True, timeout=120)

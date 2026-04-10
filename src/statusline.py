@@ -40,6 +40,7 @@ def _run():
     now = time.time()
     updated = float(s.get("updated_at", 0))
     age = now - updated
+    now = int(now)
 
     # Show status as long as playing=true, even if poller is slow.
     # Only hide after 30s stale (server genuinely stopped).
