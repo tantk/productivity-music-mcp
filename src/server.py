@@ -249,10 +249,10 @@ def music(request: str) -> str:
 
     def _set_track(result):
         """Thread-safe track update."""
+        global _current_track
         if "path" not in result:
             return
         with _track_lock:
-            nonlocal _current_track
             _current_track = _make_track_info(result)
 
     prefetch_q = queue.Queue(maxsize=1)
