@@ -239,33 +239,63 @@ def music(request: str) -> str:
     with _track_lock:
         _current_track = {}
 
-    # Auto-pick timer settings
-    timer = _auto_pick_timer()
-    focus_minutes = timer.get("focus", 25)
-    break_minutes = timer.get("break", 5)
-    cycles = timer.get("cycles", 4)
-    timer_reason = timer.get("reason", "")
+    # ─── INSTANT START: play procedural sound immediately ───
+    from .sources import procedural as _proc
+    instant = _proc.generate_pink_noise(duration=300)
+    if "path" in instant:
+        player.play_loop(instant["path"])
+        with _track_lock:
+            _current_track = {
+                "track_name": "Starting up...",
+                "track_file": instant["name"],
+                "track_source": "procedural",
+                "track_start": time.time(),
+                "track_duration": 300,
+            }
 
-    # Play initial track
-    result = dj_agent.recommend_and_play(full_request)
+    # ─── BACKGROUND: find real music + pick timer in parallel ───
+    timer_result = {}
+    music_result = {}
 
-    if "error" in result:
-        return f"Error: {result['error']}\nDJ reasoning: {result.get('dj_decision', {}).get('reason', 'N/A')}"
+    def _pick_timer():
+        timer_result.update(_auto_pick_timer())
 
-    track_path = result.get("path")
-    if not track_path:
-        return f"DJ picked source '{result.get('dj_decision', {}).get('source')}' but no track was produced."
+    def _pick_music():
+        music_result.update(dj_agent.recommend_and_play(full_request))
 
-    # Loop the track
-    player.play_loop(track_path)
-    source = result.get("source", "unknown")
-    reason = result.get("dj_decision", {}).get("reason", "")
+    t1 = threading.Thread(target=_pick_timer, daemon=True)
+    t2 = threading.Thread(target=_pick_music, daemon=True)
+    t1.start()
+    t2.start()
+    t1.join(timeout=30)
+    t2.join(timeout=60)
+
+    focus_minutes = timer_result.get("focus", 25)
+    break_minutes = timer_result.get("break", 5)
+    cycles = timer_result.get("cycles", 4)
+    timer_reason = timer_result.get("reason", "")
+
+    # ─── SWAP: replace procedural with real track ───
+    if "error" in music_result:
+        # Keep procedural playing, report error
+        source = "procedural"
+        reason = f"Falling back to ambient noise. Error: {music_result.get('error')}"
+    elif not music_result.get("path"):
+        source = "procedural"
+        reason = "No track found, keeping ambient noise."
+    else:
+        # Swap in the real track
+        player.play_loop(music_result["path"])
+        source = music_result.get("source", "unknown")
+        reason = music_result.get("dj_decision", {}).get("reason", "")
 
     _pomodoro_stop.clear()
     phase_end = time.time() + focus_minutes * 60
 
+    # Use real track info if available, otherwise keep procedural info
+    track_result = music_result if music_result.get("path") else instant
     with _track_lock:
-        _current_track = _make_track_info(result)
+        _current_track = _make_track_info(track_result)
         # Store pomo fields in _current_track so poller always has them
         _current_track["pomo_phase"] = "focus"
         _current_track["pomo_cycle"] = 1
