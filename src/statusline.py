@@ -37,18 +37,13 @@ def _run():
     except Exception:
         s = {}
 
-    now = time.time()
-    updated = float(s.get("updated_at", 0))
-    age = now - updated
-    now = int(now)
+    now = int(time.time())
 
-    # Show status as long as playing=true, even if poller is slow.
-    # Only hide after 30s stale (server genuinely stopped).
-    stale = age > 30
-
-    playing = s.get("playing") and s.get("track_name") and not stale
+    # Simple: show if playing=true and track exists. No stale check needed --
+    # state is written on events only. stop() writes playing=false.
+    playing = s.get("playing") and s.get("track_name")
     phase = s.get("pomo_phase")
-    pomo_active = phase and phase != "null" and not stale
+    pomo_active = phase and phase != "null" and s.get("playing")
 
     # Nothing to show — output nothing, don't take up space
     if not playing and not pomo_active:

@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Productivity Music MCP Server — GLM 5.1 DJ-managed, multi-source audio plugin."""
+"""Productivity Music MCP Server — GLM 5.1 DJ-managed, multi-source audio plugin.
+
+State architecture: EVENT-DRIVEN writes only.
+- state.json is written ONLY when something changes (play, stop, phase change, track swap)
+- No poller thread -- statusline reads state.json every 2s via refreshInterval
+- _current_track is the single source of truth, protected by _track_lock
+- Only _write_state() writes to disk, always from _current_track
+"""
 
 import atexit
 import os
@@ -21,11 +28,103 @@ from .sources import local_cache, procedural, lyria, minimax_music, freesound, y
 
 mcp = FastMCP("productivity-music")
 
+# ─── Shared State ───
 
-# Cleanup: kill ffplay when MCP server exits (Ctrl+C, SIGTERM, etc.)
+_track_lock = threading.Lock()
+_current_track: dict = {}
+_pomodoro_stop = threading.Event()
+_pomodoro_stop.set()  # Start in stopped state
+_pomodoro_thread: threading.Thread | None = None
+_user_context: str = ""
+_current_quote: str = ""
+_last_quote_time: float = 0
+
+
+def _write_state():
+    """Write current state to disk. ONLY place that writes state.json."""
+    with _track_lock:
+        if _current_track and _current_track.get("track_name"):
+            data = dict(_current_track)
+            data["playing"] = True
+            data["quote"] = _current_quote
+        else:
+            data = {"playing": False}
+    state.write(data)
+
+
+def _set_track(result: dict, preserve_pomo: bool = True):
+    """Update _current_track from a DJ result and write state.
+
+    Calls _make_track_info OUTSIDE the lock (it does ffprobe/GLM calls),
+    then assigns under lock.
+    """
+    global _current_track
+    if "path" not in result:
+        return
+
+    # Heavy work outside lock
+    info = _make_track_info(result)
+
+    with _track_lock:
+        if preserve_pomo:
+            for k in ("pomo_phase", "pomo_cycle", "pomo_total", "pomo_phase_end",
+                       "pomo_focus_min", "pomo_break_min"):
+                if k in _current_track:
+                    info[k] = _current_track[k]
+        _current_track = info
+
+    _write_state()
+
+
+def _set_pomo_fields(phase: str, cycle: int, total: int, phase_end: float,
+                     focus_min: int, break_min: int):
+    """Update pomodoro fields in _current_track and write state."""
+    with _track_lock:
+        _current_track["pomo_phase"] = phase
+        _current_track["pomo_cycle"] = cycle
+        _current_track["pomo_total"] = total
+        _current_track["pomo_phase_end"] = phase_end
+        _current_track["pomo_focus_min"] = focus_min
+        _current_track["pomo_break_min"] = break_min
+    _write_state()
+
+
+def _clear_track():
+    """Clear track and write stopped state."""
+    global _current_track
+    with _track_lock:
+        _current_track = {}
+    _write_state()
+
+
+def _refresh_quote():
+    """Generate a new motivational quote in background."""
+    global _current_quote, _last_quote_time
+    now = time.time()
+    if now - _last_quote_time < 60:
+        return
+
+    with _track_lock:
+        phase = _current_track.get("pomo_phase", "focus")
+        track = _current_track.get("track_name", "")
+
+    def _fetch():
+        global _current_quote, _last_quote_time
+        try:
+            _current_quote = dj_agent.generate_quote(track, phase)
+            _last_quote_time = time.time()
+            _write_state()  # Write new quote to disk
+        except Exception:
+            pass
+
+    threading.Thread(target=_fetch, daemon=True).start()
+
+
+# ─── Cleanup ───
+
 def _cleanup():
     player.stop()
-    state.clear()
+    _clear_track()
 
 atexit.register(_cleanup)
 
@@ -37,66 +136,10 @@ for _sig in (signal.SIGTERM, signal.SIGINT):
     try:
         signal.signal(_sig, _signal_handler)
     except (OSError, ValueError):
-        pass  # can't set signal handler in non-main thread
-
-_pomodoro_stop = threading.Event()
-_pomodoro_thread: threading.Thread | None = None
-_state_poller: threading.Thread | None = None
-_track_lock = threading.Lock()
-_current_track: dict = {}
+        pass
 
 
-def _start_state_poller():
-    """Background thread that updates state file every second while playing."""
-    global _state_poller
-
-    if _state_poller and _state_poller.is_alive():
-        return  # already running
-
-    def poll():
-        last_quote_time = 0
-        current_quote = ""
-        quote_generating = False
-
-        def _fetch_quote(phase, track):
-            nonlocal current_quote, last_quote_time, quote_generating
-            try:
-                current_quote = dj_agent.generate_quote(track, phase)
-                last_quote_time = time.time()
-            except Exception:
-                pass
-            finally:
-                quote_generating = False
-
-        while True:
-            with _track_lock:
-                has_track = bool(_current_track and _current_track.get("track_name"))
-                existing = dict(_current_track) if has_track else {}
-
-            if has_track:
-                existing["playing"] = True
-
-                # Generate quote in background thread so poller doesn't block
-                now = time.time()
-                if now - last_quote_time > 60 and not quote_generating:
-                    quote_generating = True
-                    phase = existing.get("pomo_phase", "focus")
-                    track = existing.get("track_name", "")
-                    threading.Thread(
-                        target=_fetch_quote, args=(phase, track), daemon=True
-                    ).start()
-
-                existing["quote"] = current_quote
-                state.write(existing)
-            time.sleep(1)
-
-    _state_poller = threading.Thread(target=poll, daemon=True)
-    _state_poller.start()
-
-
-# Start poller immediately when server loads
-_start_state_poller()
-
+# ─── Helpers ───
 
 def _get_duration(file_path: str) -> float:
     """Get audio duration using ffprobe, fallback to file size estimate."""
@@ -111,22 +154,19 @@ def _get_duration(file_path: str) -> float:
         return float(data.get("format", {}).get("duration", 0))
     except Exception:
         pass
-    # Fallback: estimate from file size
     fp = Path(file_path)
     sz = fp.stat().st_size
     if fp.suffix == ".wav":
-        return sz / (44100 * 2)
+        return sz / (44100 * 2 * 2)  # stereo 16-bit
     return sz / (128 * 1000 / 8)
 
 
 def _make_track_info(result: dict) -> dict:
-    """Build track info dict from a DJ/source result. Uses title if available."""
+    """Build track info dict. May be slow (ffprobe + GLM naming). Call OUTSIDE locks."""
     fp = Path(result["path"])
-    # Use title from source (YouTube/Lyria provide it)
     title = result.get("title", "")
 
     if not title:
-        # For cached/procedural tracks, generate a name from GLM
         source = result.get("source", "")
         if source in ("local_cache", "procedural", "lyria3"):
             try:
@@ -137,7 +177,6 @@ def _make_track_info(result: dict) -> dict:
                 pass
 
     if not title:
-        # Final fallback: clean filename
         title = fp.stem.replace("_", " ").replace("-", " ")
         for prefix in ["lyria ", "minimax ", "youtube "]:
             if title.lower().startswith(prefix):
@@ -155,7 +194,7 @@ def _make_track_info(result: dict) -> dict:
 
 
 def _auto_pick_timer() -> dict:
-    """Ask GLM to pick optimal timer settings based on time of day and context."""
+    """Ask GLM to pick optimal timer settings."""
     import json as _json
     context = dj_agent._get_context()
     client = dj_agent._get_client()
@@ -185,7 +224,7 @@ Format: {"focus": 25, "break": 5, "cycles": 4, "reason": "why"}"""
                 max_tokens=150,
                 temperature=0.3,
             )
-            content = response.choices[0].message.content.strip()
+            content = (response.choices[0].message.content or "").strip()
             if content.startswith("```"):
                 content = content.split("\n", 1)[1].rsplit("```", 1)[0].strip()
             return _json.loads(content)
@@ -195,26 +234,19 @@ Format: {"focus": 25, "break": 5, "cycles": 4, "reason": "why"}"""
     return {"focus": 25, "break": 5, "cycles": 4, "reason": "Default classic preset"}
 
 
-_user_context: str = ""
+# ─── MCP Tools ───
 
 
 @mcp.tool()
 def set_context(context: str) -> str:
     """Tell the DJ what you're working on so it picks better music and timer.
 
-    Call this anytime to update. The DJ remembers it for the session.
-    Any agent/model can call this -- it doesn't require a smart agent.
-
     Args:
         context: What you're doing, how you're feeling, what phase of work.
-                 e.g., "debugging auth module, been stuck for an hour"
-                 e.g., "starting fresh on a new feature, feeling good"
-                 e.g., "writing docs, low intensity"
-                 e.g., "final push before deadline, need to stay sharp"
     """
     global _user_context
     _user_context = context
-    return f"Context set: {context}\nThe DJ will use this for music and timer decisions."
+    return f"Context set: {context}"
 
 
 @mcp.tool()
@@ -232,43 +264,25 @@ def music(request: str) -> str:
     IMPORTANT: When calling this tool, include context about what the user is doing
     and how they might be feeling. The DJ uses this to pick better music and timer.
 
-    Examples:
-        "focus music" — basic, DJ uses time of day only
-        "User has been debugging a race condition for 2 hours, seems frustrated. Need music to help reset and refocus." — DJ picks calming music + shorter sprint timer
-        "User just shipped a big feature and is starting a new task. Fresh energy." — DJ picks energizing focus music + deep work timer
-        "User is writing documentation, low intensity work" — DJ picks light ambient + classic timer
-        "User is stuck and procrastinating" — DJ picks sprint timer with motivating music
-
     Args:
         request: Describe what the user wants AND their current context/mood/task.
-                 The more context, the better the DJ's recommendation.
     """
     global _pomodoro_thread, _current_track
 
-    # Enrich request with user context if available
-    full_request = request
-    if _user_context:
-        full_request = f"{request}. User context: {_user_context}"
+    full_request = f"{request}. User context: {_user_context}" if _user_context else request
 
     # Stop anything currently playing
-    if not _pomodoro_stop.is_set():
-        _pomodoro_stop.set()
-        if _pomodoro_thread and _pomodoro_thread.is_alive():
-            _pomodoro_thread.join(timeout=5)
+    _pomodoro_stop.set()
+    if _pomodoro_thread and _pomodoro_thread.is_alive():
+        _pomodoro_thread.join(timeout=5)
     player.stop()
-    with _track_lock:
-        _current_track = {}
 
-    # ─── INSTANT START: play cached music or procedural drone immediately ───
-    # Priority: cached music > procedural drone (never pink noise)
-    instant = None
+    # ─── INSTANT START: play cached music immediately ───
     cached = local_cache.list_tracks()
-    # Prefer cached mp3s over short clips -- real music first
     music_tracks = [t for t in cached if t["format"] == "mp3" and t["size_kb"] > 1000]
     if music_tracks:
         import random
         pick = random.choice(music_tracks)
-        instant = pick
         player.play_loop(pick["path"])
         with _track_lock:
             _current_track = {
@@ -278,21 +292,21 @@ def music(request: str) -> str:
                 "track_start": time.time(),
                 "track_duration": _get_duration(pick["path"]),
             }
+        _write_state()
     else:
-        # No cached music -- generate a warm ambient drone (sounds musical, not noise)
         from .sources import procedural as _proc
-        instant_result = _proc.generate_drone(duration=300, base_freq=55.0)
-        if "path" in instant_result:
-            instant = instant_result
-            player.play_loop(instant_result["path"])
+        drone = _proc.generate_drone(duration=300, base_freq=55.0)
+        if "path" in drone:
+            player.play_loop(drone["path"])
             with _track_lock:
                 _current_track = {
                     "track_name": "Ambient Drone",
-                    "track_file": instant_result["name"],
+                    "track_file": drone["name"],
                     "track_source": "procedural",
                     "track_start": time.time(),
                     "track_duration": 300,
                 }
+            _write_state()
 
     # ─── BACKGROUND: find real music + pick timer in parallel ───
     timer_result = {}
@@ -316,57 +330,30 @@ def music(request: str) -> str:
     cycles = timer_result.get("cycles", 4)
     timer_reason = timer_result.get("reason", "")
 
-    # ─── SWAP: replace procedural with real track ───
-    if "error" in music_result:
-        # Keep procedural playing, report error
-        source = "procedural"
-        reason = f"Falling back to ambient noise. Error: {music_result.get('error')}"
-    elif not music_result.get("path"):
-        source = "procedural"
-        reason = "No track found, keeping ambient noise."
-    else:
-        # Swap in the real track
+    # ─── SWAP: replace instant track with real track ───
+    if music_result.get("path"):
         player.play_loop(music_result["path"])
+        _set_track(music_result, preserve_pomo=False)
         source = music_result.get("source", "unknown")
         reason = music_result.get("dj_decision", {}).get("reason", "")
+    else:
+        source = "cache"
+        reason = music_result.get("error", "Using cached track")
 
+    # ─── START POMODORO ───
     _pomodoro_stop.clear()
     phase_end = time.time() + focus_minutes * 60
 
-    # Use real track info if available, otherwise keep procedural info
-    track_result = music_result if music_result.get("path") else instant
     with _track_lock:
-        _current_track = _make_track_info(track_result)
-        # Store pomo fields in _current_track so poller always has them
-        _current_track["pomo_phase"] = "focus"
-        _current_track["pomo_cycle"] = 1
-        _current_track["pomo_total"] = cycles
-        _current_track["pomo_phase_end"] = phase_end
-        _current_track["pomo_focus_min"] = focus_minutes
-        _current_track["pomo_break_min"] = break_minutes
-        display_name = _current_track["track_name"]
+        display_name = _current_track.get("track_name", "Unknown")
 
-    # Write initial state
-    state.write({**_current_track, "playing": True})
+    _set_pomo_fields("focus", 1, cycles, phase_end, focus_minutes, break_minutes)
+    _refresh_quote()
 
-    def _set_track(result):
-        """Thread-safe track update. Preserves pomo fields."""
-        global _current_track
-        if "path" not in result:
-            return
-        with _track_lock:
-            new_info = _make_track_info(result)
-            # Preserve pomo fields from existing track
-            for k in ("pomo_phase", "pomo_cycle", "pomo_total", "pomo_phase_end",
-                       "pomo_focus_min", "pomo_break_min"):
-                if k in _current_track:
-                    new_info[k] = _current_track[k]
-            _current_track = new_info
-
+    # Pomodoro background loop
     prefetch_q = queue.Queue(maxsize=1)
 
     def _prefetch(prompt: str):
-        """Generate a track in background, put in queue."""
         r = dj_agent.recommend_and_play(prompt)
         try:
             prefetch_q.put_nowait(r)
@@ -374,54 +361,46 @@ def music(request: str) -> str:
             pass
 
     def run_pomodoro():
-        global _current_track
-
         for cycle in range(cycles):
             if _pomodoro_stop.is_set():
                 break
 
-            # ─── Focus phase ───
+            # Focus phase (cycle 0 already playing from above)
             if cycle > 0:
                 player.stop()
                 result = dj_agent.recommend_and_play(
-                    f"Pomodoro focus session {cycle+1}/{cycles}. "
-                    "Generate DIFFERENT focus music than before. "
-                    "Beta-wave steady-state, no vocals, loopable. Try a new style or source."
+                    f"Pomodoro focus {cycle+1}/{cycles}. DIFFERENT style. "
+                    "Beta-wave, no vocals, loopable."
                 )
                 if "path" in result:
                     player.play_loop(result["path"])
                     _set_track(result)
 
             p_end = time.time() + focus_minutes * 60
-            with _track_lock:
-                _current_track["pomo_phase"] = "focus"
-                _current_track["pomo_cycle"] = cycle + 1
-                _current_track["pomo_phase_end"] = p_end
-            state.write({**_current_track, "playing": True})
+            _set_pomo_fields("focus", cycle + 1, cycles, p_end, focus_minutes, break_minutes)
+            _refresh_quote()
 
-            # Prefetch next track in background, swap every ~3 minutes
+            # Prefetch next track, swap every 3 min
             swap_interval = 180
             next_swap = time.time() + swap_interval
             threading.Thread(
                 target=_prefetch,
-                args=(f"Focus music variation {cycle+1}. Different style. "
-                      "Beta-wave, no vocals, steady-state.",),
+                args=(f"Focus variation {cycle+1}. Different style. Beta-wave, no vocals.",),
                 daemon=True,
             ).start()
 
             while time.time() < p_end and not _pomodoro_stop.is_set():
-                # Swap in prefetched track?
                 if time.time() >= next_swap:
                     try:
                         new_track = prefetch_q.get_nowait()
                         if "path" in new_track:
                             player.play_loop(new_track["path"])
                             _set_track(new_track)
+                            _refresh_quote()
                         next_swap = time.time() + swap_interval
                         threading.Thread(
                             target=_prefetch,
-                            args=("Another focus variation. Different style. "
-                                  "Beta-wave, no vocals, steady-state.",),
+                            args=("Another focus variation. Different style.",),
                             daemon=True,
                         ).start()
                     except queue.Empty:
@@ -431,7 +410,7 @@ def music(request: str) -> str:
             if _pomodoro_stop.is_set():
                 break
 
-            # ─── Break phase ───
+            # Break phase
             player.stop()
             is_long = (cycle + 1) == cycles
             actual_break = break_minutes * 3 if is_long else break_minutes
@@ -439,26 +418,21 @@ def music(request: str) -> str:
 
             result = dj_agent.recommend_and_play(
                 f"Pomodoro {'long' if is_long else 'short'} break. "
-                "Alpha-wave nature sounds or light acoustic, spacious, relieving."
+                "Alpha-wave nature sounds, spacious, relieving."
             )
             if "path" in result:
                 player.play_loop(result["path"])
                 _set_track(result)
 
             p_end = time.time() + actual_break * 60
-            with _track_lock:
-                _current_track["pomo_phase"] = phase
-                _current_track["pomo_cycle"] = cycle + 1
-                _current_track["pomo_phase_end"] = p_end
-            state.write({**_current_track, "playing": True})
+            _set_pomo_fields(phase, cycle + 1, cycles, p_end, focus_minutes, break_minutes)
+            _refresh_quote()
 
             while time.time() < p_end and not _pomodoro_stop.is_set():
                 _pomodoro_stop.wait(timeout=1)
 
-        with _track_lock:
-            _current_track = {}
         player.stop()
-        state.clear()
+        _clear_track()
 
     _pomodoro_thread = threading.Thread(target=run_pomodoro, daemon=True)
     _pomodoro_thread.start()
@@ -488,7 +462,6 @@ def play_audio(file_path: str, loop: bool = False) -> str:
     else:
         result = player.play(file_path, background=True)
 
-    # Write state so statusline shows what's playing
     fp = Path(file_path)
     with _track_lock:
         global _current_track
@@ -499,27 +472,28 @@ def play_audio(file_path: str, loop: bool = False) -> str:
             "track_start": time.time(),
             "track_duration": _get_duration(file_path),
         }
+    _write_state()
     return result
 
 
 @mcp.tool()
 def stop() -> str:
     """Stop the currently playing audio and Pomodoro timer."""
-    global _current_track
     _pomodoro_stop.set()
     if _pomodoro_thread and _pomodoro_thread.is_alive():
         _pomodoro_thread.join(timeout=3)
-    with _track_lock:
-        _current_track = {}
-    state.clear()
-    return player.stop()
+    player.stop()
+    _clear_track()
+    return "Audio stopped."
 
 
 @mcp.tool()
 def now_playing() -> str:
     """Check if audio is currently playing."""
     if player.is_playing():
-        return "Audio is currently playing."
+        s = state.read()
+        name = s.get("track_name", "Unknown")
+        return f"Playing: {name}"
     return "No audio is playing."
 
 
@@ -536,6 +510,16 @@ def generate_procedural(sound_type: str = "pink_noise", duration: float = 60.0) 
         return f"Error: {result['error']}"
 
     play_result = player.play(result["path"], background=True)
+    with _track_lock:
+        global _current_track
+        _current_track = {
+            "track_name": result.get("type", sound_type),
+            "track_file": result["name"],
+            "track_source": "procedural",
+            "track_start": time.time(),
+            "track_duration": duration,
+        }
+    _write_state()
     return f"{play_result} ({result['type']}, {int(duration)}s)"
 
 
@@ -543,17 +527,8 @@ def generate_procedural(sound_type: str = "pink_noise", duration: float = 60.0) 
 def generate_lyria(mood: str = "focus") -> str:
     """Generate music with Google Lyria 3 AI (takes ~10s, produces 30s clips).
 
-    Presets are neuroscience-optimized based on brain.fm research:
-    - focus: Beta-wave (16Hz) steady-state lo-fi, low salience, loopable
-    - pomodoro_focus: Same as focus but optimized for seamless looping
-    - pomodoro_break: Alpha-wave nature sounds, contrast to focus
-    - calm: Alpha-wave ambient for relaxation
-    - break: Light acoustic for Pomodoro breaks
-    - sleep: Delta-wave dark ambient drone
-    - energize: High-beta uplifting electronic
-
     Args:
-        mood: One of: focus, pomodoro_focus, pomodoro_break, calm, energize, break, sleep. Or a custom prompt.
+        mood: One of: focus, pomodoro_focus, pomodoro_break, calm, energize, break, sleep.
     """
     if mood in lyria.MOOD_PROMPTS:
         result = lyria.generate_for_mood(mood)
@@ -563,8 +538,9 @@ def generate_lyria(mood: str = "focus") -> str:
     if "error" in result:
         return f"Error: {result['error']}"
 
-    play_result = player.play(result["path"], background=True)
-    return f"{play_result} (Lyria 3, {result.get('size_kb', '?')} KB)"
+    player.play(result["path"], background=True)
+    _set_track(result, preserve_pomo=False)
+    return f"Now playing: {result.get('title', mood)} (Lyria 3)"
 
 
 @mcp.tool()
@@ -572,7 +548,7 @@ def generate_minimax(mood: str = "focus") -> str:
     """Generate music with MiniMax Music 2.5 via GMI Cloud (takes ~30-60s).
 
     Args:
-        mood: One of: focus, calm, energize, break. Or a custom prompt.
+        mood: One of: focus, calm, energize, break.
     """
     if mood in minimax_music.MOOD_PROMPTS:
         result = minimax_music.generate_for_mood(mood)
@@ -582,8 +558,9 @@ def generate_minimax(mood: str = "focus") -> str:
     if "error" in result:
         return f"Error: {result['error']}"
 
-    play_result = player.play(result["path"], background=True)
-    return f"{play_result} (MiniMax Music 2.5, {result.get('size_kb', '?')} KB)"
+    player.play(result["path"], background=True)
+    _set_track(result, preserve_pomo=False)
+    return f"Now playing: {result.get('title', mood)} (MiniMax)"
 
 
 @mcp.tool()
@@ -597,8 +574,9 @@ def play_youtube(query: str) -> str:
     if "error" in result:
         return f"Error: {result['error']}"
 
-    play_result = player.play(result["path"], background=True)
-    return f"{play_result} (YouTube, {result.get('size_kb', '?')} KB)"
+    player.play(result["path"], background=True)
+    _set_track(result, preserve_pomo=False)
+    return f"Now playing: {result.get('title', query)} (YouTube)"
 
 
 @mcp.tool()
@@ -609,37 +587,29 @@ def play_freesound(query: str) -> str:
         query: Search query (e.g., "rain ambient", "forest birds", "ocean waves").
     """
     if not freesound.is_available():
-        return "Error: FREESOUND_API_KEY not set. Get a free key at https://freesound.org/apiv2/apply/"
+        return "Error: FREESOUND_API_KEY not set."
 
     sounds = freesound.search(query, max_results=1)
     if not sounds or "error" in sounds[0]:
-        return (
-            f"Error: {sounds[0].get('error', 'No results') if sounds else 'No results'}"
-        )
+        return f"Error: {sounds[0].get('error', 'No results') if sounds else 'No results'}"
 
     s = sounds[0]
     result = freesound.download(s["id"], s["preview_url"])
     if "error" in result:
         return f"Error: {result['error']}"
 
-    play_result = player.play(result["path"], background=True)
-    return f"{play_result} (Freesound: {s['name']}, {s['duration']}s)"
+    player.play(result["path"], background=True)
+    _set_track(result, preserve_pomo=False)
+    return f"Now playing: {s['name']} (Freesound)"
 
 
 @mcp.tool()
 def list_tracks(directory: str | None = None) -> str:
-    """List all cached/available audio tracks.
-
-    Args:
-        directory: Optional directory to scan. Defaults to cache + output.
-    """
+    """List all cached/available audio tracks."""
     tracks = local_cache.list_tracks(directory)
     if not tracks:
         return "No audio files found."
-
-    lines = []
-    for t in tracks:
-        lines.append(f"  {t['name']}.{t['format']} ({t['size_kb']} KB) [{t['source']}]")
+    lines = [f"  {t['name']}.{t['format']} ({t['size_kb']} KB)" for t in tracks]
     return f"Available tracks ({len(tracks)}):\n" + "\n".join(lines)
 
 
@@ -647,23 +617,12 @@ def list_tracks(directory: str | None = None) -> str:
 def list_sources() -> str:
     """List all available music sources and their status."""
     sources = {
-        "local_cache": "Available (instant)",
-        "procedural": "Available (instant, types: binaural_beats, pink_noise, rain, drone)",
-        "lyria3": "Available"
-        if os.environ.get("GOOGLE_API")
-        else "Unavailable (no GOOGLE_API key)",
-        "minimax_music": "Available"
-        if os.environ.get("GMI_INFER")
-        else "Unavailable (no GMI_INFER key)",
-        "freesound": "Available"
-        if freesound.is_available()
-        else "Unavailable (no FREESOUND_API_KEY)",
-        "youtube": "Available"
-        if youtube.is_available()
-        else "Unavailable (yt-dlp not installed)",
-        "glm_dj": "Available"
-        if os.environ.get("GMI_INFER")
-        else "Unavailable (no GMI_INFER key)",
+        "brainfm": "Available (curated 30-min focus tracks)",
+        "procedural": "Available (instant: binaural_beats, pink_noise, rain, drone)",
+        "lyria3": "Available" if os.environ.get("GOOGLE_API") else "Unavailable (no GOOGLE_API)",
+        "youtube": "Available" if youtube.is_available() else "Unavailable (no yt-dlp)",
+        "freesound": "Available" if freesound.is_available() else "Unavailable (no FREESOUND_API_KEY)",
+        "glm_dj": "Available" if os.environ.get("GMI_INFER") else "Unavailable (no GMI_INFER)",
     }
     lines = [f"  {name}: {status}" for name, status in sources.items()]
     return "Music sources:\n" + "\n".join(lines)
@@ -671,186 +630,32 @@ def list_sources() -> str:
 
 @mcp.tool()
 def recommend_session() -> str:
-    """Ask the GLM DJ to recommend a Pomodoro preset based on time of day, context, and user history.
-
-    Returns a recommendation with reasoning. The agent should then call
-    pomodoro() or music() with the suggested settings.
-
-    The DJ considers:
-    - Time of day (morning = Classic, afternoon = Deep Work, late = Sprint)
-    - Ultradian rhythms (90-120 min natural focus cycles)
-    - Neural entrainment onset (~5 min warmup)
-    - User's recent listening history
-    """
+    """Ask the GLM DJ to recommend a Pomodoro preset based on time of day."""
     import json
-
     context = dj_agent._get_context()
     client = dj_agent._get_client()
 
-    prompt = """You are a productivity coach. Recommend the best Pomodoro preset for the user right now.
+    prompt = """Recommend the best Pomodoro preset. Respond JSON only:
+{"preset": "classic|deep_work|sprint", "focus": 25, "break": 5, "cycles": 4, "reason": "why"}"""
 
-Available presets:
-1. Classic Pomodoro: 25 min focus / 5 min break x 4 cycles (100 min total)
-   Best for: general tasks, studying, most people. Aligns with ultradian rhythm.
-
-2. Deep Work: 50 min focus / 10 min break x 3 cycles (180 min total)
-   Best for: flow-state programming, writing, deep creative work. Longer sessions allow deeper entrainment.
-
-3. Sprint: 15 min focus / 3 min break x 6 cycles (108 min total)
-   Best for: tasks you keep avoiding, admin work, emails, low-motivation days.
-
-4. Music Only: No timer, just play focus/calm/sleep/energize music continuously.
-   Best for: when you're already in flow and don't want interruptions.
-
-Respond with JSON only:
-{
-  "preset": "classic|deep_work|sprint|music_only",
-  "focus_minutes": 25,
-  "break_minutes": 5,
-  "cycles": 4,
-  "music_mode": "focus",
-  "reason": "Why this preset fits right now"
-}"""
-
-    user_msg = f"""Context:
-- Time: {context['time_of_day']} ({context['hour']}:00, {context['day_of_week']})
-- Recent history: {json.dumps(context['recent_history']) if context['recent_history'] else 'none (fresh session)'}
-
-What Pomodoro preset should the user start with?"""
+    user_msg = f"Time: {context['time_of_day']} ({context['hour']}:00, {context['day_of_week']})"
 
     for model in dj_agent.MODEL_CHAIN:
         try:
             response = client.chat.completions.create(
                 model=model,
-                messages=[
-                    {"role": "system", "content": prompt},
-                    {"role": "user", "content": user_msg},
-                ],
-                max_tokens=300,
-                temperature=0.7,
+                messages=[{"role": "system", "content": prompt}, {"role": "user", "content": user_msg}],
+                max_tokens=150, temperature=0.7,
             )
-            content = response.choices[0].message.content
-            if not content:
-                continue
-            content = content.strip()
+            content = (response.choices[0].message.content or "").strip()
             if content.startswith("```"):
-                content = content.split("\n", 1)[1]
-                if content.endswith("```"):
-                    content = content[:-3]
-                content = content.strip()
-
+                content = content.split("\n", 1)[1].rsplit("```", 1)[0].strip()
             rec = json.loads(content)
-
-            preset_name = rec.get("preset", "classic")
-            focus = rec.get("focus_minutes", 25)
-            brk = rec.get("break_minutes", 5)
-            cycles = rec.get("cycles", 4)
-            reason = rec.get("reason", "")
-            mode = rec.get("music_mode", "focus")
-
-            total = cycles * focus + (cycles - 1) * brk + brk * 3
             return (
-                f"Recommended: {preset_name.replace('_', ' ').title()}\n"
-                f"Settings: {focus}min focus / {brk}min break x {cycles} cycles (~{total}min)\n"
-                f"Music mode: {mode}\n"
-                f"Reason: {reason}\n\n"
-                f"To start, call: pomodoro(focus_minutes={focus}, break_minutes={brk}, cycles={cycles})\n"
-                f"Or for music only: music(\"{mode} music\")"
+                f"Recommended: {rec.get('preset', 'classic').replace('_', ' ').title()}\n"
+                f"Settings: {rec.get('focus', 25)}min focus / {rec.get('break', 5)}min break x {rec.get('cycles', 4)} cycles\n"
+                f"Reason: {rec.get('reason', '')}"
             )
         except Exception:
             continue
-
-    return (
-        "Recommended: Classic Pomodoro (default)\n"
-        "Settings: 25min focus / 5min break x 4 cycles (~120min)\n"
-        "Reason: Safe default backed by research.\n\n"
-        "To start, call: pomodoro(focus_minutes=25, break_minutes=5, cycles=4)"
-    )
-
-
-@mcp.tool()
-def pomodoro(focus_minutes: int = 25, break_minutes: int = 5, cycles: int = 4) -> str:
-    """Start a neuroscience-backed Pomodoro timer with automatic music switching.
-
-    Based on brain.fm research and Pomodoro technique:
-    - Focus sessions: Beta-wave (16Hz) music for sustained attention
-    - Short breaks: Alpha-wave (10Hz) nature sounds for recovery
-    - Long break (after 4 cycles): Theta-wave ambient for deep rest
-    - Neural entrainment begins ~5 min in, giving 20 min of entrained focus per session
-    - 4 x 25 min = 100 min, aligns with 90-120 min ultradian rhythm
-
-    Args:
-        focus_minutes: Focus session length (default 25).
-        break_minutes: Break session length (default 5).
-        cycles: Number of focus/break cycles (default 4).
-    """
-    global _pomodoro_thread, _current_track
-
-    if not _pomodoro_stop.is_set() and _pomodoro_thread and _pomodoro_thread.is_alive():
-        return "Pomodoro already active. Use stop() to cancel."
-
-    _pomodoro_stop.clear()
-
-    def run_pomodoro():
-        global _current_track
-        for cycle in range(cycles):
-            if _pomodoro_stop.is_set():
-                break
-
-            phase_end = time.time() + focus_minutes * 60
-            state.write({"playing": True, "pomo_phase": "focus", "pomo_cycle": cycle + 1,
-                         "pomo_total": cycles, "pomo_phase_end": phase_end,
-                         "pomo_focus_min": focus_minutes, "pomo_break_min": break_minutes})
-
-            result = dj_agent.recommend_and_play(
-                f"Pomodoro focus session {cycle+1}/{cycles}. "
-                "Beta-wave focus music, no vocals, loopable."
-            )
-            if "path" in result:
-                player.play_loop(result["path"])
-                with _track_lock:
-                    _current_track = _make_track_info(result)
-
-            while time.time() < phase_end and not _pomodoro_stop.is_set():
-                _pomodoro_stop.wait(timeout=1)
-
-            if _pomodoro_stop.is_set():
-                break
-
-            player.stop()
-            is_long = (cycle + 1) == cycles
-            actual_break = break_minutes * 3 if is_long else break_minutes
-            phase = "long_break" if is_long else "break"
-            phase_end = time.time() + actual_break * 60
-            state.write({"playing": True, "pomo_phase": phase, "pomo_cycle": cycle + 1,
-                         "pomo_total": cycles, "pomo_phase_end": phase_end,
-                         "pomo_focus_min": focus_minutes, "pomo_break_min": break_minutes})
-
-            result = dj_agent.recommend_and_play(
-                f"Pomodoro {'long' if is_long else 'short'} break. "
-                "Alpha-wave nature sounds, spacious, relieving."
-            )
-            if "path" in result:
-                player.play_loop(result["path"])
-                with _track_lock:
-                    _current_track = _make_track_info(result)
-
-            while time.time() < phase_end and not _pomodoro_stop.is_set():
-                _pomodoro_stop.wait(timeout=1)
-
-        with _track_lock:
-            _current_track = {}
-        player.stop()
-        state.clear()
-
-    _pomodoro_thread = threading.Thread(target=run_pomodoro, daemon=True)
-    _pomodoro_thread.start()
-
-    total = cycles * focus_minutes + (cycles - 1) * break_minutes + break_minutes * 3
-    return (
-        f"Pomodoro started: {cycles} cycles of {focus_minutes}min focus + {break_minutes}min break.\n"
-        f"Last break is extended to {break_minutes * 3}min (long break).\n"
-        f"Total: ~{total}min. Aligned with ultradian rhythm.\n"
-        f"Neural entrainment begins ~5 min into each focus session.\n"
-        f"Use stop() to cancel."
-    )
+    return "Recommended: Classic Pomodoro (25/5 x 4)"
