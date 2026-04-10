@@ -82,6 +82,7 @@ def _play_and_write(track: dict, pomo_fields: dict | None = None):
     data = {
         "playing": True,
         "track_name": track.get("title", Path(track["path"]).stem),
+        "track_file": Path(track["path"]).name,
         "track_source": track.get("source", "unknown"),
         "track_start": time.time(),
         "track_duration": track.get("duration", 30),
@@ -239,10 +240,11 @@ def music(request: str) -> str:
 
     full_request = f"{request}. User context: {_user_context}" if _user_context else request
 
-    # Play cached track instantly
+    # Play cached track instantly with default pomo timer
     track = _find_cached_track()
     if track:
-        _play_and_write(track)
+        phase_end = time.time() + 25 * 60  # default 25 min, DJ will update later
+        _play_and_write(track, _get_pomo_fields("focus", 1, phase_end))
 
     # Pick timer + find music in background, return instantly
     def _background():
@@ -268,27 +270,35 @@ def music(request: str) -> str:
         _pomo_total = timer.get("cycles", 4)
         _pomo_cycle = 1
 
+        phase_end = time.time() + _pomo_focus_min * 60
+
         # Find real music
         try:
             result = dj_agent.recommend_and_play(full_request)
             if result.get("path"):
-                phase_end = time.time() + _pomo_focus_min * 60
-                _play_and_write(
-                    {"path": result["path"], "title": result.get("title", ""),
-                     "source": result.get("source", ""), "duration": 1800},
-                    _get_pomo_fields("focus", 1, phase_end),
-                )
-                _schedule_phase_change(_pomo_focus_min * 60, _on_focus_end)
-                _update_quote("focus")
-                return
+                # Only swap if it's a DIFFERENT track than what's cached
+                current = state.read()
+                current_file = current.get("track_file", "")
+                new_file = Path(result["path"]).name
+                if new_file != current_file:
+                    _play_and_write(
+                        {"path": result["path"], "title": result.get("title", ""),
+                         "source": result.get("source", ""), "duration": 1800},
+                        _get_pomo_fields("focus", 1, phase_end),
+                    )
+                else:
+                    # Same track already playing — just update state with pomo fields
+                    s = state.read()
+                    s.update(_get_pomo_fields("focus", 1, phase_end))
+                    state.write(s)
         except Exception:
             pass
 
-        # DJ failed — use cached track with timer
-        phase_end = time.time() + _pomo_focus_min * 60
+        # Ensure pomo fields + timer are set regardless
         s = state.read()
-        s.update(_get_pomo_fields("focus", 1, phase_end))
-        state.write(s)
+        if not s.get("pomo_phase"):
+            s.update(_get_pomo_fields("focus", 1, phase_end))
+            state.write(s)
         _schedule_phase_change(_pomo_focus_min * 60, _on_focus_end)
         _update_quote("focus")
 
