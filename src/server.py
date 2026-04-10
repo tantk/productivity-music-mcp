@@ -264,6 +264,7 @@ def music(request: str) -> str:
 
     # Everything runs in background — return instantly
     def _start():
+        global _current_track
         # Wait for old pomodoro to finish
         if old_thread and old_thread.is_alive():
             old_thread.join(timeout=5)
@@ -276,13 +277,14 @@ def music(request: str) -> str:
             import random
             pick = random.choice(music_tracks)
             player.play_loop(pick["path"])
+            # Write state immediately with estimated duration — don't wait for ffprobe
             with _track_lock:
                 _current_track = {
                     "track_name": pick["name"].replace("_", " "),
                     "track_file": pick["name"] + "." + pick["format"],
                     "track_source": "cache",
                     "track_start": time.time(),
-                    "track_duration": _get_duration(pick["path"]),
+                    "track_duration": pick["size_kb"] / 16,  # rough estimate: ~16KB/s for mp3
                 }
             _write_state()
 
