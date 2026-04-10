@@ -187,9 +187,19 @@ def music(request: str) -> str:
     Music loops continuously. Switches between focus and break music automatically.
     Say "stop" to end.
 
+    IMPORTANT: When calling this tool, include context about what the user is doing
+    and how they might be feeling. The DJ uses this to pick better music and timer.
+
+    Examples:
+        "focus music" — basic, DJ uses time of day only
+        "User has been debugging a race condition for 2 hours, seems frustrated. Need music to help reset and refocus." — DJ picks calming music + shorter sprint timer
+        "User just shipped a big feature and is starting a new task. Fresh energy." — DJ picks energizing focus music + deep work timer
+        "User is writing documentation, low intensity work" — DJ picks light ambient + classic timer
+        "User is stuck and procrastinating" — DJ picks sprint timer with motivating music
+
     Args:
-        request: What you want (e.g., "focus music", "something calm", "lo-fi beats",
-                 "I need to concentrate", "play rain sounds").
+        request: Describe what the user wants AND their current context/mood/task.
+                 The more context, the better the DJ's recommendation.
     """
     global _pomodoro_thread, _current_track
 
