@@ -59,9 +59,11 @@ def _run():
         total_played = raw_elapsed
         tm, ts = divmod(int(total_played), 60)
 
-        lines.append(
-            f" \033[32m♫\033[0m {s['track_name']}"
-        )
+        source = s.get("track_source", "")
+        if source == "error":
+            lines.append(f" \033[31m!\033[0m \033[31m{s['track_name']}\033[0m")
+        else:
+            lines.append(f" \033[32m♫\033[0m {s['track_name']}")
 
     # ─── Pomodoro Timer ───
     if pomo_active:

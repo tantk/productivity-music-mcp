@@ -311,10 +311,22 @@ def music(request: str) -> str:
         break_minutes = timer_result.get("break", 5)
         cycles = timer_result.get("cycles", 4)
 
-        # Swap in real track
+        # Swap in real track or show error in status line
         if music_result.get("path"):
             player.play_loop(music_result["path"])
             _set_track(music_result, preserve_pomo=False)
+        elif music_result.get("error"):
+            # No cached track playing either -- show error
+            if not player.is_playing():
+                with _track_lock:
+                    _current_track = {
+                        "track_name": f"Error: {music_result['error'][:50]}",
+                        "track_source": "error",
+                        "track_start": time.time(),
+                        "track_duration": 0,
+                    }
+                _write_state()
+                return  # Don't start pomodoro if no music at all
 
         # Start pomodoro timer
         phase_end = time.time() + focus_minutes * 60
