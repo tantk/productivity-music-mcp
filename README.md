@@ -1,4 +1,4 @@
-# FocusLine
+# focusline
 
 AI-powered focus music plugin for coding CLIs. Say "play music" and it plays neuroscience-backed focus music with an automatic Pomodoro timer -- right inside Claude Code, Cursor, Windsurf, or any MCP-compatible editor.
 
@@ -214,6 +214,10 @@ productivity-music --mode focus      # Music only, no timer
 - `yt-dlp` for YouTube (optional, `pip install yt-dlp`)
 - At least one API key (GMI_INFER or GOOGLE_API)
 
+## Future updates
+
+- Integration with own Spotify playist via Oauth
+  
 ## License
 
 MIT
