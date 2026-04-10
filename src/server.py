@@ -260,14 +260,13 @@ def music(request: str) -> str:
 
     # Signal any existing pomodoro to stop (non-blocking)
     _pomodoro_stop.set()
+    old_thread = _pomodoro_thread
 
     # Everything runs in background — return instantly
     def _start():
-        global _pomodoro_thread
-
-        # Wait for old pomodoro to finish (in background, not blocking the tool)
-        if _pomodoro_thread and _pomodoro_thread.is_alive():
-            _pomodoro_thread.join(timeout=5)
+        # Wait for old pomodoro to finish
+        if old_thread and old_thread.is_alive():
+            old_thread.join(timeout=5)
         player.stop()
 
         # Play cached music immediately
